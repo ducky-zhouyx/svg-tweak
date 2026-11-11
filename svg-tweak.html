@@ -555,6 +555,15 @@
         <button class="icon" id="btnArrowStart" title="在起点加箭头">← 起点</button>
         <button class="icon" id="btnArrowEnd" title="在终点加箭头">终点 →</button>
       </div>
+      <div class="row" id="rowArrowStyle">
+        <span class="k">箭头样式</span>
+        <select id="inpArrowStyle" style="flex:1;min-width:0">
+          <option value="custom" disabled>导入样式（保留原样）</option>
+          <option value="triangle">实心三角</option>
+          <option value="open">开放箭头</option>
+          <option value="stealth">凹尾箭头</option>
+        </select>
+      </div>
       <div class="row" id="rowArrowSize">
         <span class="k">箭头大小</span>
         <input type="text" class="num" id="inpArrowSize"><span class="muted">× 线宽</span>
@@ -862,6 +871,8 @@ const I18N_EN = Object.assign(Object.create(null), {
   '线型':'Line style', '实线':'Solid', '虚线':'Dashed', '点线':'Dotted', '点划线':'Dash-dot', '长虚线':'Long dash',
   '密虚线':'Short dash', '双点划线':'Dash-dot-dot', '自定义…':'Custom…',
   '箭头':'Arrows', '← 起点':'← Start', '终点 →':'End →', '箭头大小':'Arrow size', '× 线宽':'× stroke width',
+  '箭头样式':'Arrow style', '导入样式（保留原样）':'Imported (preserve shape)',
+  '实心三角':'Filled triangle', '开放箭头':'Open arrow', '凹尾箭头':'Stealth arrow',
   '箭头偏移':'Offset', '×线宽（正=内缩）':'× width (+ = inward)', '箭头对齐':'Arrow align',
   '尖点对齐线端':'Tip at endpoint', '居中对齐线端':'Center at endpoint', '后端贴住线端':'Back at endpoint', '虚线值':'Dash pattern',
   '内容':'Content', '局部':'Range', '只改选中的字（色/字号）':'Selected characters only', '清除':'Clear', '字号':'Font size',
@@ -1219,6 +1230,96 @@ function elClientRect(el){
   return { left:r.left-s.left, top:r.top-s.top, right:r.right-s.left, bottom:r.bottom-s.top,
            width:r.width, height:r.height,
            cx:(r.left+r.right)/2-s.left, cy:(r.top+r.bottom)/2-s.top };
+}
+
+/* marker 的内容几何，不改变定义或把箭头拆成独立图形。 */
+function markerGeometry(marker){
+  const corners = [];
+  const parentMatrix = marker.parentElement.getScreenCTM().inverse();
+  for (const child of marker.children){
+    if (['defs','clippath','mask','marker','symbol','pattern'].includes(tag(child)) || typeof child.getBBox !== 'function') continue;
+    const cs = getComputedStyle(child);
+    if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') continue;
+    let b;
+    try { b = child.getBBox(); } catch(e){ continue; }
+    const m = parentMatrix.multiply(child.getScreenCTM());
+    for (const [x,y] of [[b.x,b.y],[b.x+b.width,b.y],[b.x,b.y+b.height],[b.x+b.width,b.y+b.height]]){
+      corners.push({x:m.a*x+m.c*y+m.e, y:m.b*x+m.d*y+m.f});
+    }
+  }
+  if (!corners.length) return null;
+  const xs = corners.map(p=>p.x), ys = corners.map(p=>p.y);
+  const vb = marker.viewBox.baseVal, hasVB = vb.width > 0 && vb.height > 0;
+  let sx = hasVB ? marker.markerWidth.baseVal.value / vb.width : 1;
+  let sy = hasVB ? marker.markerHeight.baseVal.value / vb.height : 1;
+  if (hasVB && marker.preserveAspectRatio.baseVal.align !== 1){
+    sx = sy = marker.preserveAspectRatio.baseVal.meetOrSlice === 2 ? Math.max(sx,sy) : Math.min(sx,sy);
+  }
+  return {box:{x:Math.min(...xs), y:Math.min(...ys), width:Math.max(...xs)-Math.min(...xs), height:Math.max(...ys)-Math.min(...ys)},
+    sx, sy, refX:marker.refX.baseVal.value, refY:marker.refY.baseVal.value};
+}
+
+/* 返回舞台相对像素范围。浏览器自己的命中和 bbox 都不包含 marker。 */
+function markerClientRects(el){
+  if (!['path','line','polyline','polygon'].includes(tag(el))) return [];
+  const cs = getComputedStyle(el), m = el.getScreenCTM();
+  if (!m || !el.getClientRects().length || cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return [];
+  const markers = ['start','end'].map(which => ({which, marker:arrowMarkerFor(el,which)})).filter(x=>x.marker);
+  if (!markers.length) return [];
+  const paths = [];
+  for (const cmd of geomCmds(el)){
+    if (cmd.t === 'M') paths.push([]);
+    if (paths.length) paths[paths.length-1].push(cmd);
+  }
+  const s = stageRect(), rects = [];
+  for (const {which,marker} of markers){
+    const cmds = which === 'start' ? paths[0] : paths[paths.length-1];
+    if (!cmds) continue;
+    const path = document.createElementNS(SVGNS,'path');
+    path.setAttribute('d',serializePathData(cmds));
+    const length = path.getTotalLength(), step = Math.min(length/2,Math.max(length*0.00001,0.0001));
+    const g = markerGeometry(marker);
+    if (!g || !(g.sx > 0) || !(g.sy > 0) || marker.markerWidth.baseVal.value <= 0 || marker.markerHeight.baseVal.value <= 0 || getComputedStyle(marker).opacity === '0') continue;
+    const p = path.getPointAtLength(which === 'start' ? 0 : length);
+    const near = path.getPointAtLength(which === 'start' ? step : length-step);
+    const orient = (marker.getAttribute('orient') || '0').trim();
+    let angle = orient.startsWith('auto') ? Math.atan2(which === 'start' ? near.y-p.y : p.y-near.y, which === 'start' ? near.x-p.x : p.x-near.x)
+      : marker.orientAngle.baseVal.value * Math.PI/180;
+    if (orient === 'auto-start-reverse' && which === 'start') angle += Math.PI;
+    const unit = marker.getAttribute('markerUnits') === 'userSpaceOnUse' ? 1 : parseFloat(cs.strokeWidth);
+    const b = {...g.box}, vb = marker.viewBox.baseVal;
+    if (getComputedStyle(marker).overflow !== 'visible'){
+      const align = marker.preserveAspectRatio.baseVal.align;
+      const ax = align === 1 ? 0 : ((align-2)%3)/2, ay = align === 1 ? 0 : Math.floor((align-2)/3)/2;
+      const tx = vb.width > 0 ? -vb.x*g.sx + (marker.markerWidth.baseVal.value-vb.width*g.sx)*ax : 0;
+      const ty = vb.height > 0 ? -vb.y*g.sy + (marker.markerHeight.baseVal.value-vb.height*g.sy)*ay : 0;
+      const left = Math.max(b.x,-tx/g.sx), top = Math.max(b.y,-ty/g.sy);
+      const right = Math.min(b.x+b.width,(marker.markerWidth.baseVal.value-tx)/g.sx);
+      const bottom = Math.min(b.y+b.height,(marker.markerHeight.baseVal.value-ty)/g.sy);
+      if (right < left || bottom < top) continue;
+      Object.assign(b,{x:left,y:top,width:right-left,height:bottom-top});
+    }
+    const cos = Math.cos(angle), sin = Math.sin(angle);
+    const points = [[b.x,b.y],[b.x+b.width,b.y],[b.x,b.y+b.height],[b.x+b.width,b.y+b.height]].map(([x,y])=>{
+      const dx = (x-g.refX)*g.sx*unit, dy = (y-g.refY)*g.sy*unit;
+      const lx = p.x+cos*dx-sin*dy, ly = p.y+sin*dx+cos*dy;
+      return {x:m.a*lx+m.c*ly+m.e-s.left,y:m.b*lx+m.d*ly+m.f-s.top};
+    });
+    const xs = points.map(p=>p.x), ys = points.map(p=>p.y);
+    const left = Math.min(...xs), right = Math.max(...xs), top = Math.min(...ys), bottom = Math.max(...ys);
+    if (unit > 0) rects.push({left,top,right,bottom,width:right-left,height:bottom-top,which});
+  }
+  return rects;
+}
+function selectionClientRect(el){
+  const rects = [elClientRect(el)];
+  for (const line of [el,...el.querySelectorAll('path,line,polyline,polygon')]) rects.push(...markerClientRects(line));
+  return {left:Math.min(...rects.map(r=>r.left)), top:Math.min(...rects.map(r=>r.top)),
+    right:Math.max(...rects.map(r=>r.right)), bottom:Math.max(...rects.map(r=>r.bottom))};
+}
+function hitMarkerLine(x,y){
+  const lines = [...doc.querySelectorAll('path,line,polyline,polygon')].reverse();
+  return lines.find(el=>isRenderedEl(el) && markerClientRects(el).some(r=>x>=r.left-2 && x<=r.right+2 && y>=r.top-2 && y<=r.bottom+2)) || null;
 }
 
 /* 屏幕像素增量 -> 画布用户单位（考虑 viewBox / zoom） */
@@ -1859,15 +1960,19 @@ stage.addEventListener('pointerdown', e => {
   const s = stageRect();
   const px = e.clientX - s.left, py = e.clientY - s.top;
 
-  // 空白处 -> 框选
-  if (e.target === doc || e.target === stage || !doc.contains(e.target)){
+  // marker 不参与浏览器原生命中；按绘制顺序补上头部，不抢上层图形的点击。
+  const blank = e.target === doc || e.target === stage || !doc.contains(e.target);
+  const markerHit = hitMarkerLine(px,py);
+  const markerOnTop = markerHit && (blank || (markerHit.compareDocumentPosition(e.target) & Node.DOCUMENT_POSITION_PRECEDING));
+  const target = markerOnTop ? markerHit : blank ? null : e.target;
+  if (!target){
     state.marquee = { x0:px, y0:py, x1:px, y1:py };
     stage.setPointerCapture(e.pointerId);
     renderHUD();
     return;
   }
 
-  const hit = e.altKey ? nearestGraphic(e.target) : topLevelOf(e.target);
+  const hit = e.altKey ? nearestGraphic(target) : topLevelOf(target);
   if (!hit) { state.marquee = { x0:px, y0:py, x1:px, y1:py }; stage.setPointerCapture(e.pointerId); renderHUD(); return; }
 
   if (e.shiftKey || e.ctrlKey){
@@ -2019,11 +2124,11 @@ function endPointer(){
     if (box.right - box.left > 4 && box.bottom - box.top > 4){
       const cands = allTopLevel();
       const touch = el => {
-        const r = elClientRect(el);
+        const r = selectionClientRect(el);
         return !(r.right < box.left || r.left > box.right || r.bottom < box.top || r.top > box.bottom);
       };
       const inside = el => {
-        const r = elClientRect(el);
+        const r = selectionClientRect(el);
         return r.left >= box.left - 1 && r.top >= box.top - 1 &&
                r.right <= box.right + 1 && r.bottom <= box.bottom + 1;
       };
@@ -2882,18 +2987,12 @@ function syncPanel(){
     const as = currentArrowState();
     $('btnArrowStart').classList.toggle('active', !!(as && as.start));
     $('btnArrowEnd').classList.toggle('active', !!(as && as.end));
-    // 读回当前箭头大小（从 marker 的 markerWidth）
-    let shown = arrowSize;
-    if (as && as.els.length){
-      const mm = (as.els[0].getAttribute('marker-end') || as.els[0].getAttribute('marker-start') || '').match(/#([^)\s]+)/);
-      if (mm){
-        const mk = doc.querySelector('marker[id="' + mm[1] + '"]');
-        if (mk) shown = parseFloat(mk.getAttribute('markerWidth')) || shown;
-      }
-    }
-    $('inpArrowSize').value = shown;
-    $('inpArrowPos').value = arrowPos;
-    $('inpArrowOffset').value = String(arrowOffset);
+    const current = as && as.els.length
+      ? arrowMarkerInfo(as.els[0], as.end ? 'end' : 'start') : null;
+    $('inpArrowStyle').value = current ? current.style : arrowStyle;
+    $('inpArrowSize').value = fnum(current ? current.size : arrowSize);
+    $('inpArrowPos').value = current ? current.pos : arrowPos;
+    $('inpArrowOffset').value = String(fnum(current ? current.off : arrowOffset));
   }
   const capV = cssOf(el, 'stroke-linecap') || 'butt';
   const joinV = cssOf(el, 'stroke-linejoin') || 'miter';
@@ -2996,6 +3095,7 @@ $('inpId').addEventListener('change', e => {
 $('inpArrowOffset').addEventListener('change', e => setArrowOffset(e.target.value));
 $('inpArrowOffset').addEventListener('keydown', e => { if (e.key === 'Enter') e.target.blur(); });
 $('inpArrowPos').addEventListener('change', e => setArrowPos(e.target.value));
+$('inpArrowStyle').addEventListener('change', e => setArrowStyle(e.target.value));
 $('inpArrowSize').addEventListener('change', e => setArrowSize(e.target.value));
 $('inpArrowSize').addEventListener('keydown', e => { if (e.key === 'Enter') e.target.blur(); });
 $('btnArrowStart').onclick = () => toggleArrow('start');
@@ -7170,16 +7270,72 @@ function setShadowBlur(v){
 
 /* ============================ 线端箭头 ============================ */
 const ARROW_TAGS = new Set(['path', 'line', 'polyline']);
+const ARROW_SHAPES = {
+  triangle: ['M0,0 L10,5 L0,10 z', 'M10,0 L0,5 L10,10 z'],
+  open: ['M0,0 L10,5 L0,10', 'M10,0 L0,5 L10,10'],
+  stealth: ['M0,0 L10,5 L0,10 L3,5 z', 'M10,0 L0,5 L10,10 L7,5 z']
+};
 let arrowSize = 6;   // 相对线宽的倍数
 let arrowPos = 'tip'; // tip=尖点在线端 / center=居中对齐 / back=后端贴线端
 let arrowOffset = 0;  // 额外偏移（× 线宽，正值=向线内缩，负值=向外突）
+let arrowStyle = 'triangle';
 try { const v = localStorage.getItem('svgtweak.arrowSize'); if (v) arrowSize = parseFloat(v) || 6; } catch(e){}
 try { const v = localStorage.getItem('svgtweak.arrowPos'); if (v) arrowPos = v; } catch(e){}
 try { const v = localStorage.getItem('svgtweak.arrowOffset'); if (v !== null) arrowOffset = parseFloat(v) || 0; } catch(e){}
+try { const v = localStorage.getItem('svgtweak.arrowStyle'); if (Object.hasOwn(ARROW_SHAPES, v)) arrowStyle = v; } catch(e){}
 
-function arrowMarkerId(color, which, size, pos, off){
+function arrowTargets(roots = [...state.sel]){
+  const out = new Set();
+  for (const root of roots){
+    for (const el of [root,...root.querySelectorAll('path,line,polyline')]){
+      if (ARROW_TAGS.has(tag(el)) && isRenderedEl(el)) out.add(el);
+    }
+  }
+  return [...out];
+}
+function arrowMarkerFor(el, which){
+  const value = libraryLocalURL(cssOf(el, 'marker-' + which) || '');
+  const match = value.match(/url\(\s*(['"]?)#([^'")]+)\1\s*\)/i);
+  const marker = match && doc.getElementById(match[2]);
+  return marker && tag(marker) === 'marker' ? marker : null;
+}
+function writeArrowMarker(el, which, marker){
+  // 内联样式才能覆盖导入文件的 CSS；关闭时显式设 none，不能退回原样式。
+  el.style.setProperty('marker-' + which, marker ? 'url(#' + marker.id + ')' : 'none');
+  el.removeAttribute('marker-' + which);
+}
+function arrowShapeOf(marker){
+  const path = marker.children.length === 1 && tag(marker.firstElementChild) === 'path' ? marker.firstElementChild : null;
+  if (path && getComputedStyle(path).transform !== 'none') return 'custom';
+  const normalized = d => (d || '').replace(/[\s,]+/g, '').toLowerCase();
+  for (const [shape, paths] of Object.entries(ARROW_SHAPES)){
+    if (path && paths.some(d => normalized(d) === normalized(path.getAttribute('d')))) return shape;
+  }
+  return 'custom';
+}
+function arrowBaseX(info, pos){
+  const b = info.geometry.box;
+  if (pos === 'center') return b.x + b.width / 2;
+  return b.x + ((pos === 'back' ? -info.direction : info.direction) > 0 ? b.width : 0);
+}
+function arrowMarkerInfo(el, which){
+  const marker = arrowMarkerFor(el, which);
+  const geometry = marker && markerGeometry(marker);
+  if (!geometry || !(geometry.sx > 0) || !(geometry.sy > 0)) return null;
+  const glyphSize = geometry.box.width > 0 ? geometry.box.width * geometry.sx : geometry.box.height * geometry.sy;
+  if (!(glyphSize > 0)) return null;
+  const strokeWidth = parseFloat(cssOf(el, 'stroke-width')) || 1;
+  const units = marker.getAttribute('markerUnits') === 'userSpaceOnUse' ? 1 : strokeWidth;
+  const direction = which === 'start' && marker.getAttribute('orient') !== 'auto-start-reverse' ? -1 : 1;
+  const pos = ['tip','center','back'].includes(marker.dataset.pos) ? marker.dataset.pos : 'tip';
+  const info = {marker,geometry,strokeWidth,units,direction,pos,style:arrowShapeOf(marker)};
+  info.size = glyphSize * units / strokeWidth;
+  info.off = (geometry.refX - arrowBaseX(info,pos)) * geometry.sx * units / strokeWidth * direction;
+  return info;
+}
+function arrowMarkerId(color, which, size, pos, off, shape){
   const o = (typeof off === 'number' ? off : arrowOffset) || 0;
-  return 'piArrow-' + which + '-' + String(color).replace(/[^a-zA-Z0-9]/g, '') + '-' +
+  return 'piArrow-' + (shape || arrowStyle) + '-' + which + '-' + String(color).replace(/[^a-zA-Z0-9]/g, c => '_' + c.charCodeAt(0).toString(16) + '_') + '-' +
     String(size).replace(/\./g, 'p') + '-' + (pos || 'tip') + '-' + String(o).replace(/\./g, 'p').replace('-', 'n');
 }
 /* 偏移换算：viewBox 宽 10，实际宽 = size×线宽 → 1 个线宽 = 10/size */
@@ -7187,7 +7343,7 @@ function arrowRefXWithOffset(which, pos, size, off){
   const base = arrowRefX(which, pos);
   const sz = size || arrowSize || 6;
   const o = (typeof off === 'number' ? off : arrowOffset) || 0;
-  return Math.round((base + (o * 10 / sz)) * 1000) / 1000;
+  return fnum(base + (which === 'start' ? -1 : 1) * o * 10 / sz);
 }
 /* 尖点/中心/后端 对应 viewBox 里的 refX（viewBox 0..10） */
 function arrowRefX(which, pos){
@@ -7196,10 +7352,10 @@ function arrowRefX(which, pos){
   if (p === 'center') return 5;
   return which === 'end' ? 0 : 10;   // back：后端贴在端点
 }
-function ensureArrowMarker(color, which, size, pos, off){
+function ensureArrowMarker(color, which, size, pos, off, shape = arrowStyle){
   const sz = size || arrowSize || 6;
-  const id = arrowMarkerId(color, which, sz, pos, off);
-  if (doc.querySelector('marker[id="' + id + '"]')) return id;
+  const id = arrowMarkerId(color, which, sz, pos, off, shape);
+  if (doc.getElementById(id)) return id;
   let defs = doc.querySelector('defs');
   if (!defs){ defs = document.createElementNS(SVGNS, 'defs'); doc.insertBefore(defs, doc.firstChild); }
   const m = document.createElementNS(SVGNS, 'marker');
@@ -7208,6 +7364,7 @@ function ensureArrowMarker(color, which, size, pos, off){
   m.setAttribute('markerUnits', 'strokeWidth');
   m.setAttribute('markerWidth', String(sz));
   m.setAttribute('markerHeight', String(sz));
+  m.setAttribute('overflow', 'visible');
   m.setAttribute('orient', 'auto');
   m.setAttribute('refX', String(arrowRefXWithOffset(which, pos, sz, off)));
   m.setAttribute('refY', '5');
@@ -7215,114 +7372,143 @@ function ensureArrowMarker(color, which, size, pos, off){
   m.setAttribute('data-pos', pos || arrowPos || 'tip');
   m.setAttribute('data-off', String(typeof off === 'number' ? off : arrowOffset));
   const path = document.createElementNS(SVGNS, 'path');
-  path.setAttribute('d', which === 'end' ? 'M0,0 L10,5 L0,10 z' : 'M10,0 L0,5 L10,10 z');
-  path.setAttribute('fill', color);
+  path.setAttribute('d', ARROW_SHAPES[shape][which === 'end' ? 0 : 1]);
+  path.style.fill = shape === 'open' ? 'none' : color;
+  path.style.stroke = shape === 'open' ? color : 'none';
+  if (shape === 'open'){
+    path.setAttribute('stroke-width', '1');
+    path.setAttribute('stroke-linejoin', 'round');
+    path.setAttribute('stroke-linecap', 'round');
+  }
   m.appendChild(path);
   defs.appendChild(m);
   return id;
 }
-/* 改箭头偏移（× 线宽） */
-function setArrowOffset(v){
-  arrowOffset = Math.max(-5, Math.min(5, parseFloat(v) || 0));
-  try { localStorage.setItem('svgtweak.arrowOffset', String(arrowOffset)); } catch(e){}
-  const els = [...state.sel].filter(e => ARROW_TAGS.has(tag(e)));
-  if (!els.length){ syncPanel(); return; }
-  pushUndo();
-  els.forEach(el => {
-    const color = toHex(cssOf(el, 'stroke') || '#000000') || '#000000';
-    ['start', 'end'].forEach(which => {
-      const attr = which === 'end' ? 'marker-end' : 'marker-start';
-      if (!el.getAttribute(attr)) return;
-      el.setAttribute(attr, 'url(#' + ensureArrowMarker(color, which, arrowSize, arrowPos, arrowOffset) + ')');
-    });
-  });
+/* 编辑时才复制定义，避免一条线的修改连带改变其他共用箭头的线。 */
+function cloneArrowMarker(source){
+  const copy = source.cloneNode(true), nodes = [copy,...copy.querySelectorAll('*')], ids = new Map();
+  for (const node of nodes) if (node.id) ids.set(node.id, 'piMarker-' + crypto.randomUUID());
+  for (const node of nodes){
+    if (node.id) node.id = ids.get(node.id);
+    for (const attr of [...node.attributes]){
+      if (attr.localName === 'href' && ids.has(attr.value.slice(1))) attr.value = '#' + ids.get(attr.value.slice(1));
+      attr.value = attr.value.replace(/url\(\s*(['"]?)#([^'")]+)\1\s*\)/gi,
+        (raw, quote, id) => ids.has(id) ? 'url(#' + ids.get(id) + ')' : raw);
+    }
+  }
+  source.parentNode.appendChild(copy);
+  return copy;
+}
+function editArrowMarkers(els, edit){
+  const copies = new Map();
+  for (const el of els) for (const which of ['start','end']){
+    const info = arrowMarkerInfo(el,which);
+    if (!info) continue;
+    const key = [info.marker.id,which,info.strokeWidth,cssOf(el,'stroke')].join('|');
+    if (!copies.has(key)){
+      const copy = cloneArrowMarker(info.marker);
+      edit(copy,info,el,which);
+      copies.set(key,copy);
+    }
+    writeArrowMarker(el,which,copies.get(key));
+  }
+}
+function setArrowRef(marker, info, pos, off, scale = 1){
+  const refX = arrowBaseX(info,pos) + info.direction * off * info.strokeWidth / (info.geometry.sx * scale * info.units);
+  marker.setAttribute('refX',String(fnum(refX)));
+  marker.setAttribute('data-pos',pos);
+  marker.setAttribute('data-off',String(fnum(off)));
+}
+function changeArrowGeometry(edit){
+  const els = arrowTargets().filter(el => arrowMarkerFor(el,'start') || arrowMarkerFor(el,'end'));
+  if (els.length){ pushUndo(); editArrowMarkers(els,edit); }
   renderHUD(); syncPanel();
-  showToast('箭头偏移：{offset} × 线宽', 1400, {offset:arrowOffset});
 }
-
-/* 描边颜色变了，把箭头 marker 换成同色的（保持原来的大小/对齐） */
-function refreshArrowsFor(els){
-  const list = els || [...state.sel];
-  list.forEach(el => {
-    if (!ARROW_TAGS.has(tag(el))) return;
-    const color = toHex(cssOf(el, 'stroke') || '#000000') || '#000000';
-    ['start', 'end'].forEach(which => {
-      const attr = which === 'end' ? 'marker-end' : 'marker-start';
-      const cur = el.getAttribute(attr);
-      if (!cur) return;
-      const id = (cur.match(/#([^)\s]+)/) || [])[1];
-      const mk = id ? doc.querySelector('marker[id="' + id + '"]') : null;
-      const pathEl = mk ? mk.querySelector('path') : null;
-      const fill = pathEl ? (pathEl.getAttribute('fill') || '') : '';
-      if (mk && fill.toLowerCase() === color.toLowerCase()) return;
-      const sz = mk ? (parseFloat(mk.getAttribute('data-size')) || arrowSize) : arrowSize;
-      const pos = mk ? (mk.getAttribute('data-pos') || arrowPos) : arrowPos;
-      const off = mk ? (parseFloat(mk.getAttribute('data-off')) || 0) : arrowOffset;
-      el.setAttribute(attr, 'url(#' + ensureArrowMarker(color, which, sz, pos, off) + ')');
-    });
-  });
+function setArrowOffset(value){
+  const v = parseFloat(value);
+  if (!Number.isFinite(v)){ syncPanel(); return; }
+  arrowOffset = v;
+  try { localStorage.setItem('svgtweak.arrowOffset',String(v)); } catch(e){}
+  changeArrowGeometry((copy,info) => setArrowRef(copy,info,info.pos,v));
+  showToast('箭头偏移：{offset} × 线宽',1400,{offset:v});
 }
-
-/* 改箭头对齐方式 */
 function setArrowPos(pos){
+  if (!['tip','center','back'].includes(pos)) return;
   arrowPos = pos;
-  try { localStorage.setItem('svgtweak.arrowPos', pos); } catch(e){}
-  const els = [...state.sel].filter(e => ARROW_TAGS.has(tag(e)));
-  if (!els.length){ syncPanel(); return; }
-  pushUndo();
-  els.forEach(el => {
-    const color = toHex(cssOf(el, 'stroke') || '#000000') || '#000000';
-    ['start', 'end'].forEach(which => {
-      const attr = which === 'end' ? 'marker-end' : 'marker-start';
-      if (!el.getAttribute(attr)) return;
-      const sz = arrowSize;
-      el.setAttribute(attr, 'url(#' + ensureArrowMarker(color, which, sz, pos, arrowOffset) + ')');
-    });
-  });
-  renderHUD(); syncPanel();
-  showToast(({tip:'箭头对齐：尖点在线端', center:'箭头对齐：居中对齐', back:'箭头对齐：后端贴线端'})[pos], 1600);
+  try { localStorage.setItem('svgtweak.arrowPos',pos); } catch(e){}
+  changeArrowGeometry((copy,info) => setArrowRef(copy,info,pos,info.off));
+  showToast(({tip:'箭头对齐：尖点在线端',center:'箭头对齐：居中对齐',back:'箭头对齐：后端贴线端'})[pos],1600);
 }
-
-/* 改箭头大小：给选中的线重建对应 marker */
-function setArrowSize(sz){
-  const v = Math.max(1, Math.min(20, parseFloat(sz) || 6));
+function setArrowSize(value){
+  const v = parseFloat(value);
+  if (!Number.isFinite(v) || v <= 0){ syncPanel(); return; }
   arrowSize = v;
-  try { localStorage.setItem('svgtweak.arrowSize', String(v)); } catch(e){}
-  const els = [...state.sel].filter(e => ARROW_TAGS.has(tag(e)));
-  if (!els.length){ syncPanel(); return; }
-  pushUndo();
-  els.forEach(el => {
-    const color = toHex(cssOf(el, 'stroke') || '#000000') || '#000000';
-    ['start', 'end'].forEach(which => {
-      const attr = which === 'end' ? 'marker-end' : 'marker-start';
-      if (!el.getAttribute(attr)) return;
-      el.setAttribute(attr, 'url(#' + ensureArrowMarker(color, which, v, arrowPos, arrowOffset) + ')');
-    });
+  try { localStorage.setItem('svgtweak.arrowSize',String(v)); } catch(e){}
+  changeArrowGeometry((copy,info) => {
+    const w = copy.markerWidth.baseVal.value, h = copy.markerHeight.baseVal.value;
+    // 无 viewBox 时改视口大小并不会缩放图形；先补一个保持原外观的 1:1 映射。
+    if (!copy.hasAttribute('viewBox')) copy.setAttribute('viewBox','0 0 ' + w + ' ' + h);
+    const scale = v / info.size;
+    copy.setAttribute('markerWidth',String(w * scale));
+    copy.setAttribute('markerHeight',String(h * scale));
+    copy.setAttribute('data-size',String(v));
+    setArrowRef(copy,info,info.pos,info.off,scale);
   });
+  showToast('箭头大小：{size} × 线宽',1400,{size:v});
+}
+function setArrowStyle(shape){
+  if (!Object.hasOwn(ARROW_SHAPES,shape)) return;
+  arrowStyle = shape;
+  try { localStorage.setItem('svgtweak.arrowStyle',shape); } catch(e){}
+  const els = arrowTargets().filter(el => arrowMarkerFor(el,'start') || arrowMarkerFor(el,'end'));
+  if (els.length) pushUndo();
+  for (const el of els) for (const which of ['start','end']){
+    const info = arrowMarkerInfo(el,which);
+    if (!info) continue;
+    const color = cssOf(el,'stroke') || '#000000';
+    const id = ensureArrowMarker(color,which,info.size,info.pos,info.off,shape);
+    writeArrowMarker(el,which,doc.getElementById(id));
+  }
   renderHUD(); syncPanel();
-  showToast('箭头大小：{size} × 线宽', 1400, {size:v});
+}
+/* 改线的颜色时保留原箭头的形状、空心部分、大小和定位。 */
+function refreshArrowsFor(roots){
+  editArrowMarkers(arrowTargets(roots),(copy,info,el) => {
+    // use 的 CSS 外观先固化成展示属性，展开后空心/描边等继承关系才不会丢失。
+    for (const use of copy.querySelectorAll('use')){
+      const style = getComputedStyle(use);
+      for (const prop of INHERIT_ATTRS) use.setAttribute(prop,libraryLocalURL(style.getPropertyValue(prop)));
+    }
+    expandUses(copy);
+    const color = cssOf(el,'stroke') || '#000000';
+    for (const node of [copy,...copy.querySelectorAll('g,path,line,polyline,polygon,rect,circle,ellipse,use')]){
+      const style = getComputedStyle(node);
+      for (const paint of ['fill','stroke']){
+        if (style.getPropertyValue(paint) !== 'none') node.style.setProperty(paint,color);
+      }
+    }
+  });
 }
 function currentArrowState(){
-  const els = [...state.sel].filter(e => ARROW_TAGS.has(tag(e)));
+  const els = arrowTargets();
   if (!els.length) return null;
   const el = els[0];
   return {
     els,
-    start: !!el.getAttribute('marker-start'),
-    end: !!el.getAttribute('marker-end')
+    start: !!arrowMarkerFor(el,'start'),
+    end: !!arrowMarkerFor(el,'end')
   };
 }
 function toggleArrow(which){
-  const els = [...state.sel].filter(e => ARROW_TAGS.has(tag(e)));
+  const els = arrowTargets();
   if (!els.length){ showToast('先选中线/路径再加箭头', 2200); return; }
   pushUndo();
-  const attr = which === 'end' ? 'marker-end' : 'marker-start';
-  const on = !!els[0].getAttribute(attr);
+  const on = !!arrowMarkerFor(els[0],which);
   els.forEach(el => {
-    if (on){ el.removeAttribute(attr); return; }
-    const color = toHex(cssOf(el, 'stroke') || '#000000') || '#000000';
+    if (on){ writeArrowMarker(el,which,null); return; }
+    const color = cssOf(el,'stroke') || '#000000';
     const id = ensureArrowMarker(color, which, arrowSize, arrowPos, arrowOffset);
-    el.setAttribute(attr, 'url(#' + id + ')');
+    writeArrowMarker(el,which,doc.getElementById(id));
   });
   syncPanel(); renderHUD();
   showToast(on ? (which === 'end' ? '已去掉终点箭头' : '已去掉起点箭头') : (which === 'end' ? '已加上终点箭头' : '已加上起点箭头'), 1400);
@@ -8001,7 +8187,7 @@ function syncLinePanel(){
   if (!on) return;
   // 箭头只对“有起点终点”的开放路径有意义
   const open = list.some(el => OPEN_TAGS.has(tag(el)));
-  ['rowArrow','rowArrowSize','rowArrowOffset','rowArrowPos'].forEach(id => {
+  ['rowArrow','rowArrowStyle','rowArrowSize','rowArrowOffset','rowArrowPos'].forEach(id => {
     const r = $(id); if (r) r.style.display = open ? '' : 'none';
   });
 }
@@ -8579,6 +8765,12 @@ const AIEditCore = (() => {
     if (attr.namespaceURI === XLINK && name !== 'href') fail('不允许的 xlink 属性');
     if (name === 'data-library-shape') {
       if (el.localName !== 'g' || !Object.hasOwn(BUILTIN_LIBRARY_SHAPES, value)) fail('无效的形状库标记');
+      return;
+    }
+    if (['data-size','data-pos','data-off'].includes(name)) {
+      const valid = name === 'data-pos' ? ['tip','center','back'].includes(value)
+        : numberRE.test(value) && Number.isFinite(Number(value)) && (name !== 'data-size' || Number(value) > 0);
+      if (el.localName !== 'marker' || !valid) fail('不允许的 SVG 属性：{name}', {name:attr.name});
       return;
     }
     if (name === 'style') { cleanStyle(el, value); return; }
