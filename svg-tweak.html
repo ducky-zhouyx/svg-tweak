@@ -282,6 +282,7 @@
   <div class="tbRow">
     <div class="grp">
       <button class="primary ti" id="btnOpen" title="打开 SVG 文件"><svg class="ic"><use href="#i-open"/></svg><span>打开</span></button>
+      <input id="svgFileInput" type="file" accept=".svg,image/svg+xml" hidden>
       <button class="ti" id="btnDemo" title="载入一张示例图"><svg class="ic"><use href="#i-demo"/></svg><span>示例</span></button>
     </div>
 
@@ -1077,6 +1078,8 @@ Object.assign(I18N_EN, {
   '先选一个字体':'Choose a font first', 'SVG 解析失败：{error}':'Could not parse SVG: {error}',
   '这不是一个 SVG 文件（根元素是 <{tag}>）':'Not an SVG file (root element is <{tag}>)', '这不是一个 SVG 文件':'This is not an SVG file',
   '已修正命名空间前缀（{count} 处）':'Fixed {count} namespace prefixes',
+  '浏览器限制了文件选择器，已切换普通方式。请再点一次「打开」。':'The browser blocked the file picker. Switched to the standard picker; click “Open” again.',
+  '打开 SVG 文件失败：{error}':'Could not open SVG file: {error}',
   '这个文件有 {count} 处「非缩放描边」(non-scaling-stroke)：编辑器里细、导出 PDF 会变粗。右侧「描边宽」下面点「改成普通描边」即可修':'This file has {count} non-scaling strokes, which may look thicker in PDF. Use Convert to Normal Stroke below Stroke Width to fix them.',
   'SVG 图形':'SVG drawing', '生成 SVG 内容…':'Generating SVG…', '生成失败':'Generation failed', '选择保存位置…':'Choose a save location…',
   '写入文件…（{size} KB）':'Writing file… ({size} KB)', '正在写入…':'Writing…', '已保存 {name}':'Saved {name}',
@@ -3488,6 +3491,7 @@ function loadSVGText(text, name, fileHandle = null){
 function readFile(file){
   const fr = new FileReader();
   fr.onload = () => loadSVGText(String(fr.result), file.name);
+  fr.onerror = () => showToast('打开 SVG 文件失败：{error}', 6000, {error:String(fr.error)});
   fr.readAsText(file);
 }
 const PICK_TYPES = [{ get description(){ return uiT('SVG 图形'); }, accept:{ 'image/svg+xml':['.svg'] } }];
@@ -3555,23 +3559,40 @@ async function pickOpenFile(){
   return window.showOpenFilePicker(base);
 }
 
+const svgFileInput = $('svgFileInput');
+let useLegacyOpen = false;
+function openSVGInput(){
+  svgFileInput.value = '';
+  svgFileInput.click();
+}
+svgFileInput.onchange = () => {
+  const file = svgFileInput.files[0];
+  svgFileInput.value = '';
+  if (file) readFile(file);
+};
 $('btnOpen').onclick = async () => {
-  if (window.showOpenFilePicker){
-    try {
-      const [h] = await pickOpenFile();
-      const f = await h.getFile();
-      const ok = loadSVGText(await f.text(), f.name, h);
-      if (ok) rememberOpenHandle(h);
-      return;
-    } catch(err){
-      if (err && err.name === 'AbortError') return;
-      // 不支持就回退到传统选择框
-    }
+  if (useLegacyOpen || typeof window.showOpenFilePicker !== 'function'){
+    openSVGInput();
+    return;
   }
-  const inp = document.createElement('input');
-  inp.type = 'file'; inp.accept = '.svg,image/svg+xml';
-  inp.onchange = () => { if (inp.files[0]) readFile(inp.files[0]); };
-  inp.click();
+  let h;
+  try {
+    [h] = await pickOpenFile();
+  } catch(err){
+    if (err && err.name === 'AbortError') return;
+    useLegacyOpen = true;
+    // 异步失败可能已消耗点击授权；这种情况必须让用户再点一次。
+    if (navigator.userActivation && navigator.userActivation.isActive) openSVGInput();
+    else showToast('浏览器限制了文件选择器，已切换普通方式。请再点一次「打开」。', 6000);
+    return;
+  }
+  try {
+    const f = await h.getFile();
+    const ok = loadSVGText(await f.text(), f.name, h);
+    if (ok) rememberOpenHandle(h);
+  } catch(err){
+    showToast('打开 SVG 文件失败：{error}', 6000, {error:err.message || String(err)});
+  }
 };
 window.addEventListener('dragover', e => { e.preventDefault(); });
 window.addEventListener('drop', async e => {

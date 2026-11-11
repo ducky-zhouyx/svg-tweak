@@ -53,6 +53,7 @@ async function withEditor(run, options = {}) {
       const raw = buffer.slice(0, i); buffer = buffer.slice(i + 1);
       if (!raw) continue;
       const msg = JSON.parse(raw);
+      if (options.onEvent && !msg.id) options.onEvent(msg);
       if (!msg.id || !pending.has(msg.id)) continue;
       const p = pending.get(msg.id); pending.delete(msg.id); clearTimeout(p.timer);
       if (msg.error) p.reject(new Error(JSON.stringify(msg.error)));

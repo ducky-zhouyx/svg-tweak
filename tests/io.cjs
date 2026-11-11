@@ -112,4 +112,80 @@ withEditor(async ({ evalJS }) => {
   assert.deepEqual(result.errors, []);
   console.log('I/O fixes regression PASS');
   console.log(JSON.stringify(result, null, 2));
-}).catch(error => { console.error(error); process.exitCode = 1; });
+}).then(testOpenPickers).catch(error => { console.error(error); process.exitCode = 1; });
+
+async function testOpenPickers() {
+  await withEditor(async ({ evalJS }) => {
+    const result = await evalJS(`(async () => {
+      const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="10" height="10"/></svg>';
+      let inputClicks = 0;
+      HTMLInputElement.prototype.click = function () { if (this.type === 'file') inputClicks++; };
+      const handle = { name:'native.svg', kind:'file', getFile:async () => new File([svg], 'native.svg') };
+      Object.defineProperty(window, 'showOpenFilePicker', { configurable:true, writable:true, value:async () => [handle] });
+      await $('btnOpen').onclick();
+      const loaded = state.fileName === 'native.svg' && state.fileHandle === handle && lastOpenHandle === handle;
+      pushUndo(); doc.querySelector('rect').setAttribute('x', '5'); markDirty();
+      const snapshot = () => JSON.stringify([doc.innerHTML, state.fileName, state.dirty, state.undo, state.redo]);
+      const before = snapshot();
+      window.showOpenFilePicker = async () => { throw new DOMException('cancelled', 'AbortError'); };
+      await $('btnOpen').onclick();
+      const cancelled = snapshot() === before && state.fileHandle === handle;
+      const failures = [];
+      for (const stage of ['getFile', 'text']) {
+        window.showOpenFilePicker = async () => [{ ...handle, getFile:async () => {
+          if (stage === 'getFile') throw new Error('getFile failed');
+          return { name:'broken.svg', text:async () => { throw new Error('text failed'); } };
+        } }];
+        await $('btnOpen').onclick();
+        failures.push(snapshot() === before && state.fileHandle === handle && $('toast').textContent.includes(stage + ' failed'));
+      }
+      return { loaded, cancelled, failures, inputClicks, errors:window.__auditErrors };
+    })()`);
+    assert.deepEqual(result, { loaded:true, cancelled:true, failures:[true, true], inputClicks:0, errors:[] });
+  });
+
+  for (const mode of ['unsupported', 'active', 'consumed']) {
+    const choosers = [];
+    await withEditor(async ({ evalJS, send, delay }) => {
+      await send('Page.setInterceptFileChooserDialog', { enabled:true });
+      await evalJS(`window.__pickerCalls = 0;
+        Object.defineProperty(window, 'showOpenFilePicker', { configurable:true, writable:true, value:${mode === 'unsupported' ? 'undefined' : `async () => {
+          window.__pickerCalls++;
+          ${mode === 'consumed' ? "const child = window.open('about:blank'); if (child) child.close();" : ''}
+          throw new DOMException('browser policy failure', 'SecurityError');
+        }`} }); true;`);
+      const clickOpen = async () => {
+        const { x, y } = await evalJS(`(() => { const r = $('btnOpen').getBoundingClientRect(); return {x:r.x + r.width / 2, y:r.y + r.height / 2}; })()`);
+        await send('Input.dispatchMouseEvent', { type:'mousePressed', button:'left', clickCount:1, x, y });
+        await send('Input.dispatchMouseEvent', { type:'mouseReleased', button:'left', clickCount:1, x, y });
+        await delay(100);
+      };
+      await clickOpen();
+      assert.equal(choosers.length, mode === 'consumed' ? 0 : 1, mode + ' initial chooser');
+      if (mode === 'consumed') assert.match(await evalJS(`$('toast').textContent`), /再点/);
+      await clickOpen();
+      assert.equal(choosers.length, mode === 'consumed' ? 1 : 2, mode + ' retry chooser');
+      assert.equal(await evalJS('window.__pickerCalls'), mode === 'unsupported' ? 0 : 1, mode + ' native retries');
+      const result = await evalJS(`(async () => {
+        const input = document.querySelector('input[type="file"][accept*=".svg"]');
+        const file = new File(['<svg xmlns="http://www.w3.org/2000/svg"><rect width="10" height="10"/></svg>'], 'repeat.svg', {type:'image/svg+xml'});
+        const resets = [];
+        for (let i = 0; i < 2; i++) {
+          const transfer = new DataTransfer(); transfer.items.add(file);
+          input.files = transfer.files; input.dispatchEvent(new Event('change'));
+          resets.push(input.value === '');
+          await new Promise(resolve => setTimeout(resolve, 80));
+          if (state.fileName !== 'repeat.svg' || state.fileHandle !== null || doc.querySelector('rect').getAttribute('width') !== '10') throw new Error('File input did not load SVG');
+          doc.querySelector('rect').setAttribute('width', '20');
+        }
+        const before = doc.innerHTML, Reader = window.FileReader;
+        window.FileReader = class { readAsText() { this.error = new Error('file read denied'); this.onerror(); } };
+        readFile(file); window.FileReader = Reader;
+        const readFailure = doc.innerHTML === before && $('toast').textContent.includes('file read denied');
+        return { connected:input.isConnected, resets, readFailure, errors:window.__auditErrors };
+      })()`);
+      assert.deepEqual(result, { connected:true, resets:[true, true], readFailure:true, errors:[] });
+    }, { onEvent:msg => { if (msg.method === 'Page.fileChooserOpened') choosers.push(msg.params); } });
+  }
+  console.log('Open picker compatibility regression PASS');
+}
