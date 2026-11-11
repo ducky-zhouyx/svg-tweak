@@ -5678,20 +5678,22 @@ function rootFromParentPoint(el, p){
 }
 /* 清掉没有被任何东西引用的 defs 内容（展开 use 后就变成死重了） */
 function pruneDefs(){
-  const hrefRefs = referencedIds();
-  const urlRefs = new Set();
-  doc.querySelectorAll("*").forEach(el => {
-    for (const a of [...el.attributes]){
-      const m = /url\s*\(\s*#([^)\s]+)\s*\)/g;
-      let hit;
-      while ((hit = m.exec(a.value))) urlRefs.add(hit[1]);
-    }
+  const refs = referencedIds();
+  const collectURLs = value => {
+    const pattern = /url\s*\(\s*(['"]?)#([^\s'"()]+)\1\s*\)/gi;
+    let hit;
+    while ((hit = pattern.exec(value))) refs.add(hit[2]);
+  };
+  [doc, ...doc.querySelectorAll('*')].forEach(el => {
+    for (const a of [...el.attributes]) collectURLs(a.value);
+    // Visio 等导出器会把箭头、填充等引用写进样式表，而非元素属性。
+    if (tag(el) === 'style') collectURLs(el.textContent);
   });
   let n = 0;
   [...doc.querySelectorAll("defs > *")].forEach(el => {
     const id = el.getAttribute("id");
     if (!id) return;
-    if (hrefRefs.has(id) || urlRefs.has(id)) return;
+    if (refs.has(id)) return;
     el.remove(); n++;
   });
   return n;
@@ -5950,11 +5952,6 @@ function flattenChildrenInPlace(container, refIds, stats, force){
 }
 
 function flattenSelection(all, force){
-  // 1) 先把 <use> 展开成真实副本（否则被引用的内容拆了就没了）
-  const useStats = expandUses(doc);
-  const pruned = useStats.expanded ? pruneDefs() : 0;
-
-  const refIds = referencedIds();
   let roots;
   if (all || !state.sel.size){
     roots = [...doc.children];
@@ -5963,12 +5960,18 @@ function flattenSelection(all, force){
   }
   const groups = roots.filter(el => tag(el) === 'g' || tag(el) === 'svg');
   const hasNestedSvg = doc.querySelector('svg > svg') || [...doc.querySelectorAll('svg')].some(e => e !== doc);
-  if (!groups.length && !useStats.expanded && !hasNestedSvg){
+  const hasLocalUse = [...doc.querySelectorAll('use')].some(u =>
+    (u.getAttribute('href') || u.getAttributeNS(XLINK_NS, 'href') || '').startsWith('#'));
+  if (!groups.length && !hasLocalUse && !hasNestedSvg){
     showToast('没有可拆的组（先选中组，或什么都不选=拆全图）', 2600);
     return;
   }
 
+  // 展开引用和清理定义也会修改文档，必须一起记入这一步撤销。
   pushUndo();
+  const useStats = expandUses(doc);
+  const pruned = useStats.expanded ? pruneDefs() : 0;
+  const refIds = referencedIds();
   const stats = { leaves: 0, skippedRef: 0, keptEffect: 0, droppedEffects: 0, distributedOpacity: 0 };
   const container = (all || !state.sel.size) ? doc : (groups[0] && groups[0].parentNode) || doc;
   if (all || !state.sel.size){

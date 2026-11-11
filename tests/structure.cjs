@@ -71,6 +71,60 @@ withEditor(async ({ evalJS, send }) => {
     undo(); check('ungroup undo', !!doc.querySelector('#g'));
     redo(); check('ungroup redo', !doc.querySelector('#g') && sameAppearance(ids.map(appearance), after));
 
+    const markerIds = ['css-tip','css-start-tip','css-mid-tip','attr-tip','inline-start-tip','inline-end-tip'];
+    const arrowIds = ['css-arrow','attribute-arrow','inline-arrow'];
+    const markerFixture = svg('<style><![CDATA[.css-arrow{marker-start:url(\'#css-start-tip\');marker-mid:url("#css-mid-tip");marker-end:url(#css-tip)}]]></style>' +
+      '<defs><g id="arrow-shape"><path d="M0 0L-6 -3L-6 3Z" fill="#123456"/></g>' +
+      markerIds.map(id => '<marker id="' + id + '" orient="auto" markerUnits="userSpaceOnUse" overflow="visible"><use href="#arrow-shape"/></marker>').join('') +
+      '<path id="unused-def" d="M0 0H10"/></defs><g id="arrow-group" transform="translate(30 20)"><g transform="translate(5 10)" fill="none" stroke="#123456" stroke-width="2">' +
+      '<path id="css-arrow" class="css-arrow" d="M10 10H40H70"/>' +
+      '<path id="attribute-arrow" d="M10 40H70" marker-start="url(\'#css-start-tip\')" marker-end="url(&quot;#attr-tip&quot;)"/>' +
+      '<path id="inline-arrow" d="M10 70H70" style="marker-start:url(\'#inline-start-tip\');marker-end:url(&quot;#inline-end-tip&quot;)"/>' +
+      '</g></g><g id="other-group"><rect x="200" y="20" width="20" height="20"/></g>');
+    function arrowAppearance() {
+      return arrowIds.map(id => {
+        const el = doc.querySelector('#' + id), css = getComputedStyle(el);
+        return { markers:[css.markerStart, css.markerMid, css.markerEnd], stroke:css.stroke, points:samples(el) };
+      });
+    }
+    function arrowsMatch(before) {
+      return arrowAppearance().every((after, i) => JSON.stringify(after.markers) === JSON.stringify(before[i].markers) && after.stroke === before[i].stroke &&
+        after.points.every((p, j) => Math.hypot(p.x - before[i].points[j].x, p.y - before[i].points[j].y) < 1e-6));
+    }
+    const markersIntact = () => markerIds.every(id => !!doc.querySelector('defs > marker[id="' + id + '"] path'));
+    for (const selected of [false, true]) {
+      const name = selected ? 'selected flatten' : 'whole flatten';
+      loadSVGText(markerFixture, 'marker-fixture.svg');
+      const original = doc.innerHTML, beforeArrows = arrowAppearance();
+      if (selected) select([doc.querySelector('#arrow-group')]);
+      flattenSelection(false, false);
+      check(name + ' keeps CSS/attribute/inline quoted marker references and their graphics', markersIntact() && arrowsMatch(beforeArrows));
+      check(name + ' removes unused definitions without flattening unrelated selected-mode groups', !doc.querySelector('#unused-def') &&
+        !doc.querySelector('g#arrow-group') && !!doc.querySelector('g#other-group') === selected);
+      const flattened = doc.innerHTML;
+      check(name + ' has one undo step', state.undo.length === 1);
+      undo();
+      check(name + ' undo restores original groups, marker uses and definitions', doc.innerHTML === original && doc.querySelectorAll('marker use').length === markerIds.length && !!doc.querySelector('#unused-def'));
+      redo();
+      check(name + ' redo restores the complete flattened drawing', doc.innerHTML === flattened && markersIntact() && arrowsMatch(beforeArrows));
+      clearSelection(); flattenSelection(false, false);
+      check(name + ' repeated flatten preserves markers', markersIntact() && arrowsMatch(beforeArrows));
+      loadSVGText(buildSVGString(), 'marker-roundtrip.svg');
+      check(name + ' export/reload preserves markers and line geometry', markersIntact() && arrowsMatch(beforeArrows));
+    }
+    loadSVGText(svg('<defs><rect id="use-source" width="40" height="20" fill="green"/></defs><use href="#use-source" x="30" y="40"/>'), 'flatten-use.svg');
+    const originalUse = doc.innerHTML, useBounds = bboxInRoot(doc.querySelector('use'));
+    flattenSelection(false, false);
+    const expandedUseBounds = bboxInRoot(doc.querySelector('rect'));
+    check('standalone canvas use expands without preexisting groups', !doc.querySelector('use') && !doc.querySelector('#use-source') &&
+      doc.querySelector('rect').parentNode === doc && ['x','y','w','h'].every(key => Math.abs(expandedUseBounds[key] - useBounds[key]) < 1e-7) && state.undo.length === 1);
+    undo();
+    check('standalone use expansion and definition cleanup undo together', doc.innerHTML === originalUse && !!doc.querySelector('use') && !!doc.querySelector('#use-source'));
+    loadSVGText(svg('<path d="M10 10H70" stroke="black"/>'), 'flatten-noop.svg');
+    const noOp = snapshot();
+    flattenSelection(false, false);
+    check('flatten without groups or local uses adds no empty undo step', snapshot() === noOp && state.undo.length === 0 && !state.dirty);
+
     for (const language of ['zh-CN', 'en']) {
       setUILanguage(language);
       for (const buttonId of ['btnFlatten', 'tbFlatten']) {
@@ -130,5 +184,5 @@ withEditor(async ({ evalJS, send }) => {
   assert(cleanup.normal.empty && cleanup.errorCleanup);
   assert(cleanup.errorToast.includes('test failure'));
   assert.deepEqual(cleanup.errors, []);
-  console.log('PASS: path merging, ungroup styles, bilingual flatten hints and Alt-click/undo, ellipse transforms, single-page PDF and print cleanup');
+  console.log('PASS: path merging, ungroup styles, marker-preserving flatten/undo/redo/roundtrip, bilingual flatten hints and Alt-click/undo, ellipse transforms, single-page PDF and print cleanup');
 }).catch(e => { console.error(e); process.exitCode = 1; });
