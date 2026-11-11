@@ -5847,6 +5847,7 @@ function expandUses(scope){
   const root = scope || doc;
   const stats = { expanded:0, missing:0, skipped:0, replacements:new Map() };
   const targets = new Map([...doc.querySelectorAll('[id]')].map(el => [el.id, el]));
+  const properties = [...AIEditCore.presentationStyles, 'transform','transform-origin','transform-box','mix-blend-mode','isolation'];
   function expand(u, ancestors){
     if (!u.parentNode) return;
     const href = u.getAttribute('href') || u.getAttributeNS(XLINK_NS, 'href') || '';
@@ -5890,19 +5891,36 @@ function expandUses(scope){
     // 克隆自己的定义必须有独立 id，且不能移除内部 clip/mask/filter 的引用目标。
     const ids = new Map();
     const nodes = [position, ...position.querySelectorAll('*')];
+    // 在实例上下文中记录样式；改 id 会使 #id 及其后代选择器失效。
+    const appearance = nodes.map(el => {
+      const style = getComputedStyle(el);
+      return properties.map(prop => [prop, libraryLocalURL(style.getPropertyValue(prop))]);
+    });
     for (const el of nodes){
       if (!el.id) continue;
       let id;
       do { id = 'svgtweak-use-' + (++expandedUseSeq); } while (doc.getElementById(id));
       ids.set(el.id, id); el.id = id;
     }
+    const remapURLs = value => value.replace(/url\(\s*(['"]?)#([^)'"\s]+)\1\s*\)/g,
+      (raw, quote, id) => ids.has(id) ? 'url("#' + ids.get(id) + '")' : raw);
     for (const el of nodes) for (const a of [...el.attributes]){
       let value = a.value;
       if (a.localName === 'href' && value[0] === '#' && ids.has(value.slice(1))) value = '#' + ids.get(value.slice(1));
-      value = value.replace(/url\(\s*(['"]?)#([^)'"\s]+)\1\s*\)/g,
-        (raw, quote, id) => ids.has(id) ? 'url(#' + ids.get(id) + ')' : raw);
+      value = remapURLs(value);
       if (value !== a.value) a.value = value;
     }
+    // 先恢复父节点，让子节点继续继承；只固化真正改变的属性，避免堆满默认样式。
+    nodes.forEach((el, index) => {
+      const style = getComputedStyle(el);
+      for (const [prop, before] of appearance[index]){
+        const value = remapURLs(before);
+        if (value && libraryLocalURL(style.getPropertyValue(prop)) !== value){
+          el.style.setProperty(prop, value);
+          if (libraryLocalURL(style.getPropertyValue(prop)) !== value) el.style.setProperty(prop, value, 'important');
+        }
+      }
+    });
     stats.expanded++;
   }
   [...root.querySelectorAll('use')].forEach(u => expand(u, new Set()));

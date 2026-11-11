@@ -370,6 +370,98 @@ withEditor(async ({ evalJS, send }) => {
     assert(output.undoExact && output.redoExact, 'one undo/redo restores original references and viewports; ' + details);
   }
 
+  const symbolCSS = await evalJS('(' + async function () {
+    const fixture = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 300"><style>' +
+      '#css-symbol{stroke:#b53a21;stroke-width:2;font-family:monospace;font-size:18px;font-weight:bold;transform:translate(5px,4px)}' +
+      '.css-body{fill:#aa2244!important}#css-body{fill:#2373b4!important;stroke-width:3}' +
+      '#css-ancestor{fill:#e7ac24}#css-ancestor>circle{stroke:#31528b;stroke-width:3}' +
+      '#css-label{fill:#21502f;letter-spacing:1px;transform:translate(2px,0)}' +
+      '#css-stop{stop-color:#ea6390;stop-opacity:.8}' +
+      '#css-accent{fill:url(#css-paint);clip-path:url(#css-clip)}' +
+      '</style><defs><linearGradient id="css-shared-paint"><stop stop-color="#ffe060"/><stop offset="1" stop-color="#6878dd"/></linearGradient>' +
+      '<symbol id="css-symbol" viewBox="0 0 150 110" overflow="visible"><defs>' +
+      '<linearGradient id="css-paint-base"><stop id="css-stop"/><stop offset="1" stop-color="#5937b0"/></linearGradient>' +
+      '<linearGradient id="css-paint" href="#css-paint-base"/>' +
+      '<clipPath id="css-clip"><rect x="0" y="35" width="70" height="25"/></clipPath></defs>' +
+      '<rect id="css-body" class="css-body" width="42" height="25"/>' +
+      '<rect class="css-inherit" x="52" width="42" height="25"/>' +
+      '<g id="css-ancestor"><circle class="css-descendant" cx="125" cy="13" r="10"/></g>' +
+      '<path id="css-accent" class="css-accent" d="M0 35H110V60H0Z"/>' +
+      '<rect class="css-shared" x="85" y="35" width="49" height="25" fill="url(#css-shared-paint)"/>' +
+      '<text id="css-label" class="css-label" y="90">Q1</text></symbol></defs>' +
+      '<use id="css-first" href="#css-symbol" x="35" y="35" width="150" height="110" fill="#4eab68"/>' +
+      '<use id="css-second" href="#css-symbol" x="285" y="145" width="150" height="110" fill="#9862bb"/></svg>';
+    loadSVGText(fixture, 'symbol-id-css.svg');
+    const sameSVG = (a, b) => new DOMParser().parseFromString(a, 'image/svg+xml').documentElement.isEqualNode(new DOMParser().parseFromString(b, 'image/svg+xml').documentElement);
+    const before = snapshot(), beforePixels = await window.__flattenImage();
+    const definitions = doc.querySelector('defs').outerHTML, undoCount = state.undo.length;
+    const reference = value => {
+      const id = value.match(/#([^'"\s)]+)/)?.[1];
+      return id && doc.getElementById(decodeURIComponent(id));
+    };
+    function inspectInstances() {
+      const instances = [...doc.querySelectorAll('svg')].filter(el => el !== doc && isRenderedEl(el));
+      const paintIds = [], clipIds = [], baseIds = [];
+      const styles = instances.map(instance => {
+        const body = instance.querySelector('.css-body'), inherited = instance.querySelector('.css-inherit');
+        const descendant = instance.querySelector('.css-descendant'), label = instance.querySelector('.css-label');
+        const accent = instance.querySelector('.css-accent'), shared = instance.querySelector('.css-shared');
+        const bodyStyle = getComputedStyle(body), childStyle = getComputedStyle(descendant), textStyle = getComputedStyle(label);
+        const paint = reference(getComputedStyle(accent).fill), clip = reference(getComputedStyle(accent).clipPath);
+        const base = paint && reference(paint.getAttribute('href') || '');
+        paintIds.push(paint?.id); clipIds.push(clip?.id); baseIds.push(base?.id);
+        return {
+          fill: bodyStyle.fill, width: bodyStyle.strokeWidth, inheritedFill: getComputedStyle(inherited).fill,
+          childFill: childStyle.fill, childStroke: childStyle.stroke, childWidth: childStyle.strokeWidth,
+          font: textStyle.fontFamily, size: textStyle.fontSize, weight: textStyle.fontWeight, textFill: textStyle.fill,
+          textSpacing: textStyle.letterSpacing, textTransform: textStyle.transform,
+          stopColor: base && getComputedStyle(base.querySelector('stop')).stopColor,
+          stopOpacity: base && getComputedStyle(base.querySelector('stop')).stopOpacity,
+          privateRefs: !!paint && !!clip && !!base && [paint, clip, base].every(el => instance.contains(el)),
+          sharedRef: reference(getComputedStyle(shared).fill) === doc.querySelector('defs > #css-shared-paint'),
+          selectable: [body, inherited, descendant, accent, shared, label].every(el => topLevelOf(el) === el && allTopLevel().includes(el))
+        };
+      });
+      const ids = [...doc.querySelectorAll('[id]')].map(el => el.id);
+      return {
+        styles, uniqueIds: new Set(ids).size === ids.length,
+        independentRefs: [paintIds, clipIds, baseIds].every(ids => ids.length === 2 && ids.every(Boolean) && new Set(ids).size === 2),
+        definitionsUnchanged: doc.querySelector('defs').outerHTML === definitions
+      };
+    }
+    $('btnFlatten').click();
+    const after = snapshot(), afterPixels = await window.__flattenImage();
+    const result = {
+      pixelError: afterPixels.reduce((max, value, i) => Math.max(max, Math.abs(value - beforePixels[i])), 0),
+      changedChannels: afterPixels.filter((value, i) => value !== beforePixels[i]).length,
+      flattened: inspectInstances(), undoSteps: state.undo.length - undoCount
+    };
+    undo(); result.undoExact = sameSVG(snapshot(), before) && doc.querySelectorAll('use').length === 2;
+    redo(); result.redoExact = sameSVG(snapshot(), after);
+    loadSVGText(buildSVGString(), 'symbol-id-css-roundtrip.svg');
+    const reloadedPixels = await window.__flattenImage();
+    result.roundtripPixelError = reloadedPixels.reduce((max, value, i) => Math.max(max, Math.abs(value - beforePixels[i])), 0);
+    result.reloaded = inspectInstances(); result.errors = window.__auditErrors;
+    return result;
+  } + ')()');
+  assert.deepEqual(symbolCSS.errors, []);
+  assert.equal(symbolCSS.pixelError, 0, 'symbol #id CSS must survive expansion; ' + JSON.stringify(symbolCSS));
+  assert.equal(symbolCSS.roundtripPixelError, 0, 'export/reload preserves symbol CSS appearance');
+  for (const [phase, output] of Object.entries({ flattened: symbolCSS.flattened, reloaded: symbolCSS.reloaded })) {
+    const details = phase + ': ' + JSON.stringify(output);
+    assert(output.uniqueIds && output.independentRefs && output.definitionsUnchanged, 'private references stay independent and shared definitions stay unchanged; ' + details);
+    assert.equal(output.styles.length, 2, 'both symbol instances remain present; ' + details);
+    assert.deepEqual(output.styles.map(style => style.inheritedFill), ['rgb(78, 171, 104)', 'rgb(152, 98, 187)'], 'instances retain their distinct inherited fill; ' + details);
+    assert(output.styles.every(style => style.fill === 'rgb(35, 115, 180)' && style.width === '3px' &&
+      style.childFill === 'rgb(231, 172, 36)' && style.childStroke === 'rgb(49, 82, 139)' && style.childWidth === '3px' &&
+      style.font === 'monospace' && style.size === '18px' && style.weight === '700' && style.textFill === 'rgb(33, 80, 47)' &&
+      style.textSpacing === '1px' && style.textTransform === 'matrix(1, 0, 0, 1, 2, 0)' &&
+      style.stopColor === 'rgb(234, 99, 144)' && style.stopOpacity === '0.8' &&
+      style.privateRefs && style.sharedRef && style.selectable), 'id, ancestor-id, font, transform and gradient-stop CSS stays editable; ' + details);
+  }
+  assert.equal(symbolCSS.undoSteps, 1, 'symbol CSS expansion is one undo step');
+  assert(symbolCSS.undoExact && symbolCSS.redoExact, 'symbol CSS undo/redo restores the exact references and expanded geometry');
+
   const prepared = await evalJS('(' + function () {
     loadSVGText('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 150" style="fill:#8844cc;font-family:Times New Roman"><rect x="20" y="20" width="100" height="50"/><path d="M150 30 L270 110" fill="none" stroke="black" stroke-width="3"/><text x="20" y="120" font-size="24">SVG export check</text></svg>', 'pdf-check.svg');
     window.__printCalls = 0;
@@ -398,5 +490,5 @@ withEditor(async ({ evalJS, send }) => {
   assert(cleanup.normal.empty && cleanup.errorCleanup);
   assert(cleanup.errorToast.includes('test failure'));
   assert.deepEqual(cleanup.errors, []);
-  console.log('PASS: path merging, ungroup styles, marker-preserving flatten/undo/redo/roundtrip, bilingual flatten controls, recursive leaf editing with preserved group effects, ellipse transforms, single-page PDF and print cleanup');
+  console.log('PASS: path merging, ungroup styles, marker-preserving flatten/undo/redo/roundtrip, bilingual flatten controls, recursive leaf editing with preserved group effects, symbol ID CSS and independent/shared references, ellipse transforms, single-page PDF and print cleanup');
 }).catch(e => { console.error(e); process.exitCode = 1; });
