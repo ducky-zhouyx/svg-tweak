@@ -13,7 +13,29 @@ withEditor(async ({ evalJS, send }) => {
       const id = value.match(/#([^'"\s)]+)/)?.[1];
       return id ? [...doc.querySelectorAll('marker')].find(el => el.id === decodeURIComponent(id)) : null;
     };
-    const glyph = mk => [...mk.querySelectorAll('path')].map(el => el.getAttribute('d')).join('|');
+    // Compare actual referenced path geometry in marker coordinates, whether a
+    // definition still uses <use> or an edit has expanded its private copy.
+    const glyph = mk => {
+      const paths = [];
+      function visit(el, parentMatrix) {
+        const own = el.transform?.baseVal.consolidate()?.matrix;
+        let matrix = own ? parentMatrix.multiply(own) : parentMatrix;
+        if (el.localName === 'use') {
+          const href = el.getAttribute('href') || el.getAttributeNS('http://www.w3.org/1999/xlink', 'href');
+          const target = href?.startsWith('#') && doc.getElementById(href.slice(1));
+          check(!!target, 'marker glyph contains a broken use reference');
+          matrix = matrix.translate(el.x.baseVal.value, el.y.baseVal.value);
+          visit(target, matrix);
+        } else if (el.localName === 'path') {
+          paths.push([el.getAttribute('d'), ...['a','b','c','d','e','f'].map(key => Math.round(matrix[key] * 1e6) / 1e6)]);
+        } else {
+          [...el.children].forEach(child => visit(child, matrix));
+        }
+      }
+      [...mk.children].forEach(child => visit(child, new DOMMatrix()));
+      check(paths.length > 0, 'marker glyph must contain visible path geometry');
+      return JSON.stringify(paths);
+    };
     const visio = svg('<style>.visio-line{fill:none;stroke:#000;stroke-width:.75;marker-end:url(#visio-tip)}.visio-tip{fill:#000;stroke:#000;stroke-width:.22935779816514}</style>' +
       '<defs><g id="visio-glyph"><path d="M 2 1 L 0 0 L 1.98117 -0.993387 C 1.67173 -0.364515 1.67301 0.372641 1.98465 1.00043" style="stroke:none"/></g>' +
       '<marker id="visio-tip" class="visio-tip" refX="-7.63" orient="auto" markerUnits="strokeWidth" overflow="visible"><use href="#visio-glyph" transform="scale(-4.36 -4.36)"/></marker></defs>' +
