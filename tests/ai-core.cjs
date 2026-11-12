@@ -339,7 +339,7 @@ withEditor(async ({evalJS}) => {
     }
     results.push('exact NMOS/PMOS markers accepted in insert, local replacement and full-SVG replacement');
 
-    const circuitKinds=['vdd','gnd','capacitor','junction','crossover'];
+    const circuitKinds=['vdd','gnd','capacitor','junction','crossover','switch-on','switch-off','inv','nand','and','nor','or','xor'];
     const circuitShapes=circuitKinds.map((kind,i)=>{
       const g=makeLibraryShape(kind);g.id='generated-'+kind;g.setAttribute('transform','translate('+(20+i*60)+' 170)');return g;
     });
@@ -353,7 +353,7 @@ withEditor(async ({evalJS}) => {
         check(g.children.length===circuitShapes[i].children.length && !g.querySelector('image,use'),'new circuit symbol lost native editable geometry: '+kind);
       }
     }
-    results.push('VDD/GND/capacitor/junction/crossover markers pass static preparation and a native AI insert batch');
+    results.push('circuit, switch and logic-gate markers pass static preparation and a native AI insert batch');
 
     for(const svg of [
       '<g data-library-shape="mos"><line x2="10"/></g>', '<g data-library-shape="NMOS"><line x2="10"/></g>',

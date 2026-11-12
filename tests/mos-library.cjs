@@ -41,7 +41,7 @@ withEditor(async ({ evalJS, send }) => {
     const closed = $('shapeLibrary').hidden && $('btnShapeLibrary').getAttribute('aria-expanded') === 'false';
     return { initial, open, separate, cards, closed, unchanged: snapshot() === before && state.undo.length === undo && state.dirty === dirty };
   });
-  assert.deepEqual(panel, { initial: true, open: true, separate: true, cards: ['nmos', 'pmos', 'vdd', 'gnd', 'capacitor', 'junction', 'crossover'], closed: true, unchanged: true });
+  assert.deepEqual(panel, { initial: true, open: true, separate: true, cards: ['nmos', 'pmos', 'vdd', 'gnd', 'capacitor', 'junction', 'crossover', 'switch-on', 'switch-off', 'inv', 'nand', 'and', 'nor', 'or', 'xor'], closed: true, unchanged: true });
   results.push('independent library panel and toolbar');
 
   const geometry = await page(() => ['nmos', 'pmos'].map(kind => {

@@ -4,7 +4,7 @@ const {withEditor} = require('./browser.cjs');
 
 const FORMAT = 'svg-tweak-shape-library';
 const STORAGE = 'svgtweak.shapeLibrary';
-const BUILTIN_KINDS = ['nmos','pmos','vdd','gnd','capacitor','junction','crossover'];
+const BUILTIN_KINDS = ['nmos','pmos','vdd','gnd','capacitor','junction','crossover','switch-on','switch-off','inv','nand','and','nor','or','xor'];
 const NAME = '缓存 “电路” <img src=x onerror=alert(1)>';
 const FIXTURE = `<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400" viewBox="50 -20 600 400" color="#305070" font-family="Arial">
   <style>.tile {stroke:#285d7c;stroke-width:3}.caption {font-size:15px;font-weight:600}</style>

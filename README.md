@@ -16,7 +16,7 @@ The interface supports **English and Simplified Chinese**. Use the language menu
 - **Basic drawing:** lines, rectangles, circles, triangles, text, and imported images.
 - **AI collaboration:** edit a selection or the whole diagram, attach reference images for style or drawing guidance, preview before applying, generate multiple candidates, and revisit versions from the chat.
 - **Visual comparison:** side-by-side before/after previews with synchronized zoom and pan, independent of the editor canvas. Switch to a single view or compare different candidates.
-- **Reusable shapes:** built-in NMOS, PMOS, VDD, GND, capacitors, junctions, and non-connecting wire crossovers. Save your own shapes and share libraries as JSON files.
+- **Reusable shapes:** built-in NMOS, PMOS, VDD, GND, capacitors, junctions, non-connecting wire crossovers, open/closed switches, and logic gates. Save your own shapes and share libraries as JSON files.
 - **Export:** save editable SVG files or use the browser's print dialog to export a PDF.
 
 This is a graphics editor, not an electronic design or circuit simulation tool. It does not provide electrical rule checking, automatic routing, or simulation.
@@ -102,6 +102,8 @@ Click **Shape library** in the toolbar to open the left panel, select a componen
 - **Capacitor:** two parallel plates with vertical leads by default; rotate it for a horizontal layout.
 - **Junction:** crossing lines with a solid connection dot.
 - **Non-connecting crossover:** a horizontal wire arcs over a vertical wire, with a transparent gap rather than a white covering shape.
+- **Switch-on / Switch-off:** closed and open single-pole switches with two contacts.
+- **INV / NAND / AND / NOR / OR / XOR:** ANSI-style logic symbols; INV has one input, and the other gates have two. INV, NAND, and NOR include an output inversion bubble.
 
 Placed symbols are ordinary SVG groups. Move, rotate, restyle, or ungroup them as needed; each placement takes one undo step. Symbols are graphical only: they do not automatically connect wires or establish electrical relationships.
 

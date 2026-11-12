@@ -2,13 +2,15 @@
 const assert = require('node:assert/strict');
 const {withEditor} = require('./browser.cjs');
 
-const KINDS = ['vdd','gnd','capacitor','junction','crossover'];
-const SIZES = [[40,30],[40,40],[40,60],[40,40],[40,40]];
+const KINDS = ['vdd','gnd','capacitor','junction','crossover','switch-on','switch-off','inv','nand','and','nor','or','xor'];
+const SIZES = [[40,30],[40,40],[40,60],[40,40],[40,40],[60,6],[60,18],...Array.from({length:6},() => [80,48])];
 const SEGMENTS = {
   vdd:[[0,0,40,0],[20,0,20,30]],
   gnd:[[20,0,20,24],[0,24,40,24],[8,32,32,32],[16,40,24,40]],
   capacitor:[[20,0,20,24],[20,36,20,60],[0,24,40,24],[0,36,40,36]],
-  junction:[[0,20,40,20],[20,0,20,40]]
+  junction:[[0,20,40,20],[20,0,20,40]],
+  'switch-on':[[0,3,15,3],[45,3,60,3]],
+  'switch-off':[[0,15,15,15],[45,15,60,15]]
 };
 const BLANK = '<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400" viewBox="0 0 600 400"/>';
 const near = (actual,expected,label,tolerance=.05) =>
@@ -73,13 +75,39 @@ withEditor(async ({evalJS,send}) => {
   assert.equal(cross.vertical.d,'M20 0V8M20 16V40');assert.ok(!cross.vertical.gap&&cross.vertical.below);
   results.push('VDD/GND/capacitor/junction geometry and transparent, genuinely gapped crossover match the sketches');
 
+  const topology = await page(() => ['switch-on','switch-off','inv','nand','and','nor','or','xor'].map(kind => {
+    const g=makeLibraryShape(kind),switchKind=kind.startsWith('switch-');
+    doc.appendChild(g);
+    const axis=kind==='switch-on'?3:15;
+    const result={kind,contacts:g.querySelectorAll('circle').length,
+      widths:[...g.querySelectorAll('line,path,circle')].map(el => ({tag:el.localName,width:getComputedStyle(el).strokeWidth})),
+      inputCount:[...g.querySelectorAll('line')].filter(el => +el.getAttribute('x1')===0).length,
+      inverted:!!g.querySelector('circle[cx="68"][cy="24"]'),
+      connected:switchKind?g.querySelector('path').isPointInStroke(new DOMPoint(30,axis)):null,
+      xorCurve:kind==='xor'?g.querySelectorAll('path').length===2:null};
+    g.remove();return result;
+  }));
+  for(const item of topology) {
+    for(const leaf of item.widths)assert.equal(leaf.width,leaf.tag==='line'?'1px':'2px',item.kind+' '+leaf.tag+' stroke width');
+    if(item.kind.startsWith('switch-')) {
+      assert.equal(item.contacts,2,item.kind+' two contacts');
+      assert.equal(item.connected,item.kind==='switch-on',item.kind+' blade connection state');
+    } else {
+      assert.equal(item.inputCount,item.kind==='inv'?1:2,item.kind+' input count');
+      assert.equal(item.inverted,['inv','nand','nor'].includes(item.kind),item.kind+' inversion bubble');
+      assert.equal(item.contacts,item.inverted?1:0,item.kind+' bubble count');
+      if(item.kind==='xor')assert.equal(item.xorCurve,true,'XOR has an extra input curve');
+    }
+  }
+  results.push('closed/open switch blades, gate input counts, inversion bubbles and XOR extra curve match symbol meanings; bodies use width 2 and input/output leads stay at width 1');
+
   await page(xml => {
     loadSVGText(xml,'circuit-test.svg');toggleShapeLibrary(true);$('chkWhite').checked=false;
     state.zoom=1.2;centerDoc();state.panX+=17;state.panY-=11;applyZoom();
   },BLANK);
   const empty=await page(() => snapshot());
   for(const [i,kind] of KINDS.entries()) {
-    const x=100+i*95,y=185;
+    const x=70+(i%5)*110,y=90+Math.floor(i/5)*110;
     await page(kind => $('shapeLibraryItems').querySelector('[data-shape-kind="'+kind+'"]').click(),kind);
     const p=await clientPoint(x,y),before=await page(() => ({xml:snapshot(),undo:state.undo.length,dirty:state.dirty}));
     await mouse('mouseMoved',p);
@@ -108,8 +136,8 @@ withEditor(async ({evalJS,send}) => {
     for(let i=1;i<n;i++)undo();const blank=aiSameXML(snapshot(),empty);
     for(let i=0;i<n;i++)redo();return {oneStep,blank,count:doc.querySelectorAll('[data-library-shape]').length};
   },{n:KINDS.length,empty});
-  assert.deepEqual(undoRedo,{oneStep:4,blank:true,count:5});compare(await samples(),beforeUndo,'undo/redo');
-  results.push('all five real pointer ghosts/placements center correctly at non-default zoom; each placement has one undo step');
+  assert.deepEqual(undoRedo,{oneStep:KINDS.length-1,blank:true,count:KINDS.length});compare(await samples(),beforeUndo,'undo/redo');
+  results.push('all circuit, switch and gate pointer ghosts/placements center correctly at non-default zoom; each placement has one undo step');
 
   const exported=await page(() => buildSVGString());
   const portability=await page(xml => {
