@@ -6533,8 +6533,8 @@ function librarySaveSelection(){
   } catch (error){ librarySetStatus('保存失败：{error}', true, {error}); return null; }
 }
 function libraryMOSContent(kind){
-  return '<line x1="24" y1="12" x2="24" y2="48"/>' +
-    '<line x1="16" y1="18" x2="16" y2="42"/>' +
+  return '<line x1="24" y1="12" x2="24" y2="48" stroke-width="2"/>' +
+    '<line x1="16" y1="18" x2="16" y2="42" stroke-width="2"/>' +
     `<line x1="0" y1="30" x2="${kind === 'pmos' ? 8 : 16}" y2="30"/>` +
     '<polyline points="24,18 40,18 40,0"/>' +
     '<polyline points="24,42 40,42 40,60"/>' +
