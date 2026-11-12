@@ -31,7 +31,9 @@ This is a graphics editor, not an electronic design or circuit simulation tool. 
 
 **Only `svg-tweak.html` is required to run the editor.** The `tests/` directory is for development and does not need to be included when sharing the app.
 
-If your browser cannot write directly to a local file, Save as falls back to a download. **The canvas is not autosaved. Save important changes before closing or refreshing the page.**
+When Chrome provides a file handle for an opened or dropped SVG, **Save** writes back to that file (with write permission when requested). Browsers that cannot provide a handle use Save as instead.
+
+Saving requires a browser that supports the native file-save dialog, such as Chrome or Edge. If a save fails, the editor reports the failing step and keeps the drawing marked as unsaved. **The canvas is not autosaved. Save important changes before closing or refreshing the page.**
 
 ### Common controls
 

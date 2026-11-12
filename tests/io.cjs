@@ -112,7 +112,105 @@ withEditor(async ({ evalJS }) => {
   assert.deepEqual(result.errors, []);
   console.log('I/O fixes regression PASS');
   console.log(JSON.stringify(result, null, 2));
-}).then(testOpenPickers).catch(error => { console.error(error); process.exitCode = 1; });
+}).then(testOpenPickers).then(testDroppedFileSave).then(testSaveFailures).catch(error => { console.error(error); process.exitCode = 1; });
+
+async function testDroppedFileSave() {
+  await withEditor(async ({evalJS}) => {
+    const result = await evalJS('(' + (async () => {
+      const source='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect id="dropped-rect" width="10" height="10"/></svg>';
+      const writes=[];
+      let picks=0,requests=0,permission='prompt';
+      const handle={name:'existing.svg',kind:'file',queryPermission:async () => permission,
+        requestPermission:async () => {requests++;return permission='granted';},
+        createWritable:async () => ({write:async blob => {writes.push(await blob.text());},close:async () => {}})};
+      window.showSaveFilePicker=async () => {picks++;throw new DOMException('overwrite picker aborted','AbortError');};
+      const drop=async (contents,getHandle,name='existing.svg') => {
+        const file=new File([contents],name,{type:'image/svg+xml'}),event=new Event('drop',{cancelable:true});
+        Object.defineProperty(event,'dataTransfer',{value:{files:[file],items:[{getAsFileSystemHandle:getHandle}]}});
+        window.dispatchEvent(event);
+        for(let i=0;i<100;i++) {
+          if(state.fileName===name) return;
+          await new Promise(resolve=>setTimeout(resolve,10));
+        }
+        throw new Error('Dropped file did not load');
+      };
+      await drop(source,async () => handle);
+      const bound=state.fileHandle===handle;
+      for(const width of ['20','30']) {
+        doc.querySelector('#dropped-rect').setAttribute('width',width);markDirty();
+        await $('btnSave').onclick();
+      }
+      const saved={bound,picks,requests,count:writes.length,widths:writes.map(xml=>
+        new DOMParser().parseFromString(xml,'image/svg+xml').querySelector('#dropped-rect').getAttribute('width')),
+        dirty:state.dirty,saving:state.saving,handle:state.fileHandle===handle,remembered:lastOpenHandle===handle};
+      await drop(source,async () => {throw new Error('File handles unavailable');},'fallback.svg');
+      return {saved,fallback:{name:state.fileName,unbound:state.fileHandle===null},errors:__auditErrors};
+    }).toString() + ')()');
+    assert.deepEqual(result.saved,{bound:true,picks:0,requests:1,count:2,widths:['20','30'],dirty:false,saving:false,handle:true,remembered:true},
+      'Dragging an existing SVG must retain its native file handle and Save must write through it instead of opening an overwrite picker');
+    assert.deepEqual(result.fallback,{name:'fallback.svg',unbound:true});assert.deepEqual(result.errors,[]);
+  });
+  console.log('Dropped SVG save regression PASS: drag retains the original file handle, requests write permission once and repeated Save writes edits without invoking the overwrite picker; unavailable handles do not retain a previous file association.');
+}
+
+async function testSaveFailures() {
+  await withEditor(async ({evalJS}) => {
+    const result = await evalJS('(' + (async () => {
+      const simple = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="10" height="10"/></svg>';
+      const cases = [];
+      let downloads = 0, pickerCalls = 0;
+      const click = HTMLAnchorElement.prototype.click;
+      HTMLAnchorElement.prototype.click = function () { downloads++; };
+      try {
+        for (const method of ['save','saveAs']) {
+          for (const stage of ['create','write','close']) {
+            for (const name of ['AbortError','NotAllowedError']) {
+              let aborts = 0;
+              const fail = () => { throw new DOMException('mock ' + stage + ' failed', name); };
+              const handle = {name:'original.svg',kind:'file',queryPermission:async () => 'granted',
+                createWritable:async () => {
+                  if (stage === 'create') fail();
+                  return {write:async () => { if (stage === 'write') fail(); },
+                    close:async () => { if (stage === 'close') fail(); }, abort:async () => { aborts++; }};
+                }};
+              const candidate = {...handle,name:'copy.svg'};
+              loadSVGText(simple,'original.svg',handle);markDirty();lastOpenHandle=handle;
+              window.showSaveFilePicker=async () => { pickerCalls++;return candidate; };
+              await (method === 'save' ? save() : saveAs());
+              cases.push({method,stage,name,dirty:state.dirty,saving:state.saving,sameHandle:state.fileHandle===handle,
+                rememberedOriginal:lastOpenHandle===handle,message:$('toast').textContent,progress:$('progLabel').textContent,aborts});
+            }
+          }
+        }
+        window.showSaveFilePicker=async () => { throw new DOMException('mock picker aborted','AbortError'); };
+        await saveAs();
+        const canceled={dirty:state.dirty,saving:state.saving,message:$('toast').textContent};
+        let written='';
+        window.showSaveFilePicker=async () => ({name:'retry.svg',kind:'file',createWritable:async () => ({
+          write:async blob => {written=await blob.text();},close:async () => {}
+        })});
+        await saveAs();
+        const retry=!!written&&state.fileName==='retry.svg'&&!state.dirty&&!state.saving;
+        markDirty();
+        Object.defineProperty(window,'showSaveFilePicker',{configurable:true,writable:true,value:undefined});
+        await saveAs();
+        const unsupported={dirty:state.dirty,saving:state.saving,message:$('toast').textContent};
+        return {cases,canceled,retry,unsupported,downloads,pickerCalls,errors:__auditErrors};
+      } finally { HTMLAnchorElement.prototype.click=click; }
+    }).toString() + ')()');
+    const stages={create:'创建文件',write:'写入文件',close:'完成写入'};
+    for (const item of result.cases) {
+      assert.ok(item.dirty&&!item.saving&&item.sameHandle&&item.rememberedOriginal,JSON.stringify(item));
+      assert.match(item.message,/保存失败/);assert.ok(item.message.includes(stages[item.stage]));
+      assert.ok(item.message.includes(item.name));
+      assert.equal(item.progress,'保存失败');assert.equal(item.aborts,item.stage==='create'?0:1);
+    }
+    assert.ok(result.canceled.dirty&&!result.canceled.saving);assert.match(result.canceled.message,/保存窗口.*中止/);
+    assert.ok(result.unsupported.dirty&&!result.unsupported.saving);assert.match(result.unsupported.message,/不支持文件保存/);
+    assert.equal(result.retry,true);assert.equal(result.downloads,0);assert.equal(result.pickerCalls,6);assert.deepEqual(result.errors,[]);
+  });
+  console.log('Save failures regression PASS: create/write/close AbortError and permission errors stay unsaved, release streams, identify the failing step and allow retry; picker cancellation does not download.');
+}
 
 async function testOpenPickers() {
   await withEditor(async ({ evalJS }) => {

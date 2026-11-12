@@ -1095,13 +1095,16 @@ Object.assign(I18N_EN, {
   'SVG 图形':'SVG drawing', '生成 SVG 内容…':'Generating SVG…', '生成失败':'Generation failed', '选择保存位置…':'Choose a save location…',
   '写入文件…（{size} KB）':'Writing file… ({size} KB)', '正在写入…':'Writing…', '已保存 {name}':'Saved {name}',
   '已保存：{name}':'Saved: {name}', '✓ 已保存 {time}':'✓ Saved {time}', '✓ 已保存 {time} · {name}':'✓ Saved {time} · {name}',
-  '已取消':'Canceled', '改为下载…':'Downloading instead…',
-  '浏览器在此环境不允许直接写盘（file:// 限制），已改为下载':'Direct file writing is unavailable here (file:// restriction); downloading instead',
-  '下载 {name}…':'Downloading {name}…', '已下载 {name}':'Downloaded {name}',
-  '浏览器不支持直接写文件，已下载 {name}':'Direct file writing is unsupported; downloaded {name}',
+  '已取消':'Canceled',
   '准备保存…':'Preparing to save…', '检查写入权限…':'Checking write permission…',
   '没有写入权限，改用另存为…':'No write permission; using Save As…', '收尾…':'Finishing…', '保存失败':'Save failed',
   '保存失败：{error}':'Save failed: {error}', '画布宽高要大于 0':'Canvas width and height must be greater than 0',
+  '选择保存位置':'Choosing a save location', '生成 SVG':'Generating SVG', '检查写入权限':'Checking write permission',
+  '创建文件':'Creating the file', '写入文件':'Writing the file', '完成写入':'Finishing the file',
+  '保存失败（{stage}）：{error}':'Save failed ({stage}): {error}',
+  '尚未保存文件':'File not saved',
+  '保存窗口已取消或被浏览器中止。请重试。':'The save dialog was canceled or aborted by the browser. Please try again.',
+  '当前浏览器不支持文件保存，请使用 Chrome 或 Edge。':'This browser does not support file saving. Please use Chrome or Edge.',
   '没有记录原始画布尺寸':'No original canvas size recorded', '画布已还原':'Canvas size restored',
   '要双击在路径线上':'Double-click directly on the path', '圆弧暂不支持插入节点':'Adding nodes to arcs is not yet supported',
   '先点中一个节点':'Select a node first', '起点不能删，删它后面的节点试试':'The start node cannot be deleted; try the next node',
@@ -3611,9 +3614,12 @@ function loadSVGText(text, name, fileHandle = null){
   aiRememberOriginal(snapshot());
   return true;
 }
-function readFile(file){
+function readFile(file, fileHandle = null){
   const fr = new FileReader();
-  fr.onload = () => loadSVGText(String(fr.result), file.name);
+  fr.onload = () => {
+    const loaded = loadSVGText(String(fr.result), file.name, fileHandle);
+    if (loaded && fileHandle) rememberOpenHandle(fileHandle);
+  };
   fr.onerror = () => showToast('打开 SVG 文件失败：{error}', 6000, {error:String(fr.error)});
   fr.readAsText(file);
 }
@@ -3722,16 +3728,17 @@ window.addEventListener('drop', async e => {
   e.preventDefault();
   const f = e.dataTransfer.files && e.dataTransfer.files[0];
   if (!f) return;
-  // 尽量拿到文件句柄，用于记住目录（拿不到也没关系）
+  // 保留拖入 SVG 的句柄，让「保存」能写回原文件，而不是退到覆盖选择器。
+  let fileHandle = null;
   try {
     const it = e.dataTransfer.items && e.dataTransfer.items[0];
     if (it && it.getAsFileSystemHandle){
       const h = await it.getAsFileSystemHandle();
-      if (h && h.kind === 'file') rememberOpenHandle(h);
+      if (h && h.kind === 'file') fileHandle = h;
     }
   } catch(err){}
   if (/^image\//.test(f.type || '') && !/svg/.test(f.type)){ importImageFile(f); return; }
-  readFile(f);
+  readFile(f, fileHandle);
 });
 
 /* ============================ 保存 ============================ */
@@ -3755,31 +3762,40 @@ function suggestedName(){
   if (n === '未加载文件' || n === '未命名') n = 'drawing.svg';
   return n.replace(/\.svg$/i, '') + '.svg';
 }
-function downloadSVG(str, name){
-  const blob = new Blob([str], { type:'image/svg+xml;charset=utf-8' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = name;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+function reportSaveFailure(error, stage){
+  progDone(false, '保存失败');
+  showToast('保存失败（{stage}）：{error}', 10000,
+    {stage:uiT(error.saveStage || stage), error:(error.name || 'Error') + ': ' + (error.message || String(error))});
 }
 /* 写文件：一次性写 Blob。
    Blob 由浏览器直接交给 IO 层，不需要 JS 逐块编码/多次系统调用，
    是 File System Access 里最快的写法（比一次写字符串、比逐块写都快）。 */
 async function writeHandle(handle, str, onStep){
   const t = { create: 0, write: 0, close: 0 };
-  let t0 = performance.now();
-  const w = await handle.createWritable();
-  t.create = performance.now() - t0;
-  if (onStep) onStep();
-  const blob = new Blob([str], { type: 'image/svg+xml;charset=utf-8' });
-  t0 = performance.now();
-  await w.write(blob);
-  t.write = performance.now() - t0;
-  t0 = performance.now();
-  await w.close();
-  t.close = performance.now() - t0;
-  return t;
+  let w, stage = '创建文件';
+  try {
+    let t0 = performance.now();
+    w = await handle.createWritable();
+    t.create = performance.now() - t0;
+    if (onStep) onStep();
+    const blob = new Blob([str], { type: 'image/svg+xml;charset=utf-8' });
+    stage = '写入文件';
+    t0 = performance.now();
+    await w.write(blob);
+    t.write = performance.now() - t0;
+    stage = '完成写入';
+    t0 = performance.now();
+    await w.close();
+    t.close = performance.now() - t0;
+    return t;
+  } catch (error){
+    // 写入失败时释放临时写入流，防止下一次保存仍被文件锁阻塞。
+    try { if (w && typeof w.abort === 'function') await w.abort(); } catch (_){}
+    const failure = new Error(error.message || String(error), {cause:error});
+    failure.name = error.name || 'Error';
+    failure.saveStage = stage;
+    throw failure;
+  }
 }
 /* ---------- 保存进度条 ---------- */
 let progHideTimer = null;
@@ -3825,50 +3841,45 @@ function flashSaved(name){
 async function saveAs(){
   if (state.saving) return;
   state.saving = true;
+  let stage = '选择保存位置';
   try {
-    progSet(6, '生成 SVG 内容…');
-    await nextPaint();
-    let str;
-    try { str = buildSVGString(); } catch(e){ str = null; }
-    if (!str){ progDone(false, '生成失败'); return; }
-    if (window.showSaveFilePicker){
+    if (typeof window.showSaveFilePicker === 'function'){
+      progSet(6, '选择保存位置…');
+      let h;
+      const saveOpts = { suggestedName: suggestedName(), types: PICK_TYPES, id: 'svgtweak-save' };
+      const startAt = state.fileHandle || lastOpenHandle;
+      // 在点击事件内立即打开选择器，避免等待绘制/序列化消耗点击授权。
       try {
-        progSet(22, '选择保存位置…');
-        let h;
-        const saveOpts = { suggestedName: suggestedName(), types: PICK_TYPES, id: 'svgtweak-save' };
-        const startAt = state.fileHandle || lastOpenHandle;
-        try {
-          h = await window.showSaveFilePicker(startAt ? Object.assign({}, saveOpts, { startIn: startAt }) : saveOpts);
-        } catch(err2){
-          if (err2 && err2.name === 'AbortError') throw err2;
-          h = await window.showSaveFilePicker(saveOpts);   // startIn 不被接受就退回默认
-        }
-        if (h) rememberOpenHandle(h);
-        progSet(55, '写入文件…（{size} KB）', {size:Math.max(1, Math.round(str.length / 1024))});
-        await nextPaint();
-        await writeHandle(h, str, () => progSet(80, '正在写入…'));
-        state.fileHandle = h;
-        state.fileName = h.name;
-        refreshFileLabel();
-        markDirty(false);
-        flashSaved(h.name);
-        progDone(true, '已保存 {name}', {name:h.name});
-        showToast('已保存：{name}', 1800, {name:h.name});
-        return;
-      } catch(err){
-        if (err && err.name === 'AbortError'){ progDone(false, '已取消'); return; }
-        progDone(false, '改为下载…');
-        showToast('浏览器在此环境不允许直接写盘（file:// 限制），已改为下载', 3200);
+        h = await window.showSaveFilePicker(startAt ? Object.assign({}, saveOpts, { startIn: startAt }) : saveOpts);
+      } catch (error){
+        if (!startAt || !['TypeError','NotFoundError'].includes(error.name)) throw error;
+        h = await window.showSaveFilePicker(saveOpts);
       }
+      stage = '生成 SVG';
+      progSet(28, '生成 SVG 内容…');
+      await nextPaint();
+      const str = buildSVGString();
+      stage = '写入文件';
+      progSet(55, '写入文件…（{size} KB）', {size:Math.max(1, Math.round(str.length / 1024))});
+      await nextPaint();
+      await writeHandle(h, str, () => progSet(80, '正在写入…'));
+      state.fileHandle = h;
+      state.fileName = h.name;
+      rememberOpenHandle(h);
+      refreshFileLabel();
+      markDirty(false);
+      flashSaved(h.name);
+      progDone(true, '已保存 {name}', {name:h.name});
+      showToast('已保存：{name}', 1800, {name:h.name});
+      return;
     }
-    const name = suggestedName();
-    progSet(70, '下载 {name}…', {name});
-    await nextPaint();
-    downloadSVG(str, name);
-    markDirty(false);
-    flashSaved(name);
-    progDone(true, '已下载 {name}', {name});
-    showToast('浏览器不支持直接写文件，已下载 {name}', 2600, {name});
+    progDone(false, '保存失败');
+    showToast('当前浏览器不支持文件保存，请使用 Chrome 或 Edge。', 7000);
+  } catch (error){
+    if (stage === '选择保存位置' && error.name === 'AbortError'){
+      progDone(false, '尚未保存文件');
+      showToast('保存窗口已取消或被浏览器中止。请重试。', 8000);
+    } else reportSaveFailure(error, stage);
   } finally {
     state.saving = false;
   }
@@ -3877,16 +3888,18 @@ async function save(){
   if (!state.fileHandle) return saveAs();
   if (state.saving) return;
   state.saving = true;
+  let stage = '检查写入权限';
   progSet(4, '准备保存…');
-  await nextPaint();
   try {
     progSet(12, '检查写入权限…');
     let perm = await state.fileHandle.queryPermission({ mode:'readwrite' });
     if (perm !== 'granted'){ perm = await state.fileHandle.requestPermission({ mode:'readwrite' }); }
-    if (perm !== 'granted'){ state.saving = false; progSet(10, '没有写入权限，改用另存为…'); return saveAs(); }
+    if (perm !== 'granted'){ state.saving = false; progSet(10, '没有写入权限，改用另存为…'); return await saveAs(); }
+    stage = '生成 SVG';
     progSet(28, '生成 SVG 内容…');
     await nextPaint();
     const str = buildSVGString();
+    stage = '写入文件';
     progSet(58, '写入文件…（{size} KB）', {size:Math.max(1, Math.round(str.length / 1024))});
     await nextPaint();
     const tm = await writeHandle(state.fileHandle, str, () => progSet(78, '正在写入…'));
@@ -3898,8 +3911,7 @@ async function save(){
     showToast('已保存：{name}', 1800, {name:state.fileHandle.name});
     try { console.log('[save] create=' + tm.create.toFixed(0) + 'ms write=' + tm.write.toFixed(0) + 'ms close=' + tm.close.toFixed(0) + 'ms size=' + str.length); } catch(e){}
   } catch(err){
-    if (err && err.name === 'AbortError'){ progDone(false, '已取消'); }
-    else { progDone(false, '保存失败'); showToast('保存失败：{error}', 3000, {error:err.message || err}); }
+    reportSaveFailure(err, stage);
   } finally {
     state.saving = false;
   }
