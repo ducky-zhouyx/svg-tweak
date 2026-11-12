@@ -213,11 +213,11 @@ withEditor(async ({ evalJS, send }) => {
   near(edited.moved.y - drag.before.y, 19 / drag.scale, 'ordinary group drag y');
   near(edited.moved.w, drag.before.w, 'drag width'); near(edited.moved.h, drag.before.h, 'drag height');
   near(edited.angle, 37, 'rotation input');
-  edited.leaves.forEach((leaf, i) => {
+  edited.leaves.forEach(leaf => {
     assert.equal(leaf.stroke, 'rgb(212, 63, 90)');
-    near(leaf.width, i < 2 ? 2 : 2.5, 'explicit MOS bars and inherited lead line width');
+    near(leaf.width, 2.5, 'whole-symbol displayed line width');
   });
-  results.push('ordinary move, rotation, uniform stroke color and lead width editing preserve explicit MOS bars');
+  results.push('ordinary move, rotation, uniform stroke color and whole-symbol displayed width editing');
 
   const output = await page(() => {
     const samples = root => [...root.querySelectorAll('line,polyline,circle,ellipse,path')].map(el => {

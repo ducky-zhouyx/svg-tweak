@@ -3168,8 +3168,14 @@ $('inpStrokeText').addEventListener('change', e => { if (state.sel.size) pushUnd
 function applyStrokeWidthDisplay(v){
   if (!state.sel.size) return;
   state.sel.forEach(el => {
-    const s = (typeof elScale === 'function') ? (elScale(el).s || 1) : 1;
-    el.style.setProperty('stroke-width', String(v / s));
+    // 内置元件的主体有独立线宽；主动改整组时同步图元，避免只改到引线。
+    const targets = el.matches('g[data-library-shape]')
+      ? [el,...el.querySelectorAll('line,polyline,polygon,rect,circle,ellipse,path')]
+      : [el];
+    for (const target of targets){
+      const s = (typeof elScale === 'function') ? (elScale(target).s || 1) : 1;
+      target.style.setProperty('stroke-width', String(v / s));
+    }
   });
   renderHUD();
 }

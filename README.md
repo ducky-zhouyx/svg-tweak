@@ -107,6 +107,8 @@ Click **Shape library** in the toolbar to open the left panel, select a componen
 
 Placed symbols are ordinary SVG groups. Move, rotate, restyle, or ungroup them as needed; each placement takes one undo step. Symbols are graphical only: they do not automatically connect wires or establish electrical relationships.
 
+Some symbols have bolder bodies by default. Setting a selected symbol's stroke width applies the chosen width uniformly to all its strokes.
+
 ### Save your own shapes
 
 Select one or more objects, enter a name, and click **Save selection to library**. Multiple objects become one reusable shape without needing to be grouped first.

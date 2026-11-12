@@ -172,5 +172,42 @@ withEditor(async ({evalJS,send}) => {
   near(custom.center[0],300,'custom compound center x');near(custom.center[1],200,'custom compound center y');
   assert.equal(custom.dot,'rgb(17, 17, 17)');assert.ok(custom.transparent&&custom.native);assert.equal(custom.undo,1);assert.deepEqual(custom.errors,[]);
   results.push('new metadata survives custom-library capture, strict static validation and JSON import; compound instances stay editable and independent of host styling');
+
+  const widthEditing=await page(xml => {
+    const leaves='line,polyline,polygon,path,rect,circle,ellipse';
+    const widths=root => [...root.querySelectorAll(leaves)].map(el => parseFloat(getComputedStyle(el).strokeWidth)*elScale(el).s);
+    const input=(id,value,type='change') => {$(id).value=value;$(id).dispatchEvent(new Event(type));};
+    const cases=Object.keys(BUILTIN_LIBRARY_SHAPES).map(kind => {
+      loadSVGText(xml,'width-'+kind+'.svg');
+      const g=makeLibraryShape(kind);g.setAttribute('transform','translate(80 40) scale(1.7)');doc.appendChild(g);select([g]);
+      const before=snapshot(),undoCount=state.undo.length;
+      input('inpWidthNum','4');const four=widths(doc),oneStep=state.undo.length===undoCount+1;
+      undo();const undoRestores=aiSameXML(snapshot(),before);redo();const redoFour=widths(doc);
+      input('inpWidthNum','0');const zero=widths(doc);
+      input('inpWidthNum','2.5');const recovered=widths(doc);
+      input('inpWidth','1.8','input');const slider=widths(doc);
+      input('inpWidth','1.8','input');const repeated=widths(doc);
+      const exported=buildSVGString();loadSVGText(exported,'width-roundtrip.svg');const reloaded=widths(doc);
+      select([doc.querySelector('[data-library-shape]')]);ungroupSelection();
+      return {kind,four,oneStep,undoRestores,redoFour,zero,recovered,slider,repeated,reloaded,ungrouped:widths(doc)};
+    });
+    loadSVGText(xml,'width-multiselect.svg');
+    const nmos=makeLibraryShape('nmos'),inv=makeLibraryShape('inv'),ordinary=createSvgEl('g');
+    nmos.setAttribute('transform','scale(1.5)');inv.setAttribute('transform','translate(100 0) scale(.75)');
+    ordinary.innerHTML='<line x1="200" y1="0" x2="240" y2="40" stroke="#111111" stroke-width="7"/>';
+    doc.append(nmos,inv,ordinary);select([nmos,inv,ordinary]);input('inpWidthNum','4');
+    return {cases,multi:[widths(nmos),widths(inv)],ordinary:getComputedStyle(ordinary.firstElementChild).strokeWidth,errors:__auditErrors};
+  },BLANK);
+  assert.equal(widthEditing.cases.length,15);
+  for(const item of widthEditing.cases){
+    assert.ok(item.oneStep&&item.undoRestores,item.kind+' width edit has one-step undo');
+    for(const [phase,expected] of [['four',4],['redoFour',4],['zero',0],['recovered',2.5],['slider',1.8],['repeated',1.8],['reloaded',1.8],['ungrouped',1.8]]){
+      assert.ok(item[phase].length,item.kind+' '+phase+' has editable geometry');
+      item[phase].forEach(width => near(width,expected,item.kind+' '+phase+' displayed width'));
+    }
+  }
+  widthEditing.multi.flat().forEach(width => near(width,4,'differently scaled multi-selection width'));
+  assert.equal(widthEditing.ordinary,'7px');assert.deepEqual(widthEditing.errors,[]);
+  results.push('all 15 built-ins support whole-symbol numeric and repeated slider widths, zero/recovery, one-step undo/redo, scaled multi-selection and SVG reload/ungroup without changing ordinary group styling');
   console.log(JSON.stringify({ok:true,results},null,2));
 }).catch(error => {console.error(error);process.exitCode=1;});
